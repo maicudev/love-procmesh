@@ -475,14 +475,20 @@ function m:calculateBoundingBox()
 end
 
 
+-- Regenerate the mesh object from vertices and indices
+function m:refresh()
+  self.mesh = lovr.graphics.newMesh(self.vbuffer_format, self.vlist, 'cpu')
+  self.mesh:setIndices(self.ilist)
+  self:calculateBoundingBox()
+end
+
+
 --- Draw the solid mesh in the supplied pass.
 function m:draw(pass, ...)
   if #self.ilist < 3 then return end
   if self.normals_dirty then self:updateNormals() end
   if not self.mesh then
-    self.mesh = lovr.graphics.newMesh(self.vbuffer_format, self.vlist, 'gpu')
-    self.mesh:setIndices(self.ilist)
-    self:calculateBoundingBox()
+    self:refresh()
   end
   pass:draw(self.mesh, ...)
 end
