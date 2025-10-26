@@ -14,6 +14,7 @@ m.__index = m
 m.vbuffer_format = {
   { 'VertexPosition', 'vec3' },
   { 'VertexNormal',   'vec3' },
+  { 'VertexColor',    'vec3' },
 }
 
 local EPSILON = 1e-6
@@ -39,6 +40,16 @@ end
 -- to use integer pairs/triples as table keys, first convert them to a string
 local function listToHash(...)   -- listToHash(1,2,3) -> '1;2;3'
   return table.concat({...}, ',')
+end
+
+
+-- round up passed-in numbers to specified precision and turn to string
+local function precisionHash(precision, ...)
+  local values = {...}
+  for i, value in ipairs(values) do
+    values[i] = math.floor(value / precision + 0.5) + 0.0
+  end
+  return table.concat(values, ';')
 end
 
 
@@ -228,14 +239,115 @@ function m:map(fn, side_filter)
 end
 
 
+function m:filterTriangles(predicate)
+  local other = self:clone()
+  for i = #other.ilist, 1, -3 do
+    local a = other.vlist[other.ilist[i - 2]]
+    local b = other.vlist[other.ilist[i - 1]]
+    local c = other.vlist[other.ilist[i - 0]]
+    local keep = predicate(a, b, c)
+    if not keep then
+      table.remove(other.ilist, i)
+      table.remove(other.ilist, i - 1)
+      table.remove(other.ilist, i - 2)
+    end
+  end
+  return other
+end
+
+
 --- Create a solid by transforming each vertex by mat4.
 -- Example for laying down an upright mesh:
 --    solid:transform(mat4():rotate(pi/2, 1,0,0))
 function m:transform(transform, side_filter)
   local tvec3 = vec3()
   return self:map(function(x, y, z)
-      return transform:mul(tvec3:set(x, y, z)):unpack()
+      return tvec3:set(x, y, z):transform(transform):unpack()
     end, side_filter)
+end
+
+
+function m:scale(vec3_or_sx, sy, sz)
+  local sx
+  if type(vec3_or_x) == 'userdata' then
+    sx, sy, sz = vec3_or_x:unpack()
+  elseif type(vec3_or_x) == 'table' then
+    sx, sy, sz = unpack(vec3_or_x)
+  elseif type(vec3_or_sx) == 'number' then
+    sx = vec3_or_sx
+    sy = sy or sx
+    sz = sz or sy
+  else
+    error('unsupported input')
+  end
+  local tvec3 = vec3()
+  return self:map(function(x, y, z)
+      return x * sx, y * sy, z * sz
+    end)
+end
+
+
+-- distort the solid from reference curve shape to target curve shape
+function m:bendOnCurve(curve_ref, curve_tgt, up, curve_subdivisions)
+  up = up or vec3(0, 1, 0)
+  curve_subdivisions = curve_subdivisions or 32
+  local solid = self:clone()
+  local rendered_ref = curve_ref:render(curve_subdivisions)
+  local points_ref = {}
+  local usedIndexSet = {}
+  local ts = {}
+  for i = 1, #rendered_ref, 3 do
+    table.insert(points_ref, vec3(rendered_ref[i], rendered_ref[i + 1], rendered_ref[i + 2]))
+  end
+  local rendered_tgt = curve_tgt:render(curve_subdivisions)
+  local points_tgt = {}
+  for i = 1, #rendered_tgt, 3 do
+    table.insert(points_tgt, vec3(rendered_tgt[i], rendered_tgt[i + 1], rendered_tgt[i + 2]))
+  end
+  -- map mesh vertices to closest ref curve points
+  local curveIndexFromMesh = {}
+  for i, vn in ipairs(solid.vlist) do
+    ts[i] = i / #solid.vlist
+    local v = vec3(unpack(vn))
+    local shortest = math.huge
+    local shortest_i
+    for j, point in ipairs(points_ref) do
+      local d = point:distance(v)
+      if d < shortest then
+        shortest = d
+        shortest_i = j
+      end
+    end
+    curveIndexFromMesh[vn] = shortest_i
+    usedIndexSet[shortest_i] = true
+  end
+  -- calcualte transforms from ref curve to tgt curve
+  local curveTransforms = {}
+  for i = 1, #points_ref do
+    if usedIndexSet[i] then
+      local p_ref = points_ref[i]
+      local p_tgt = points_tgt[i]
+      local t_tgt = mat4():target(
+        p_tgt,
+        p_tgt + vec3(curve_tgt:getTangent(ts[i])),
+        up)
+      local t_ref = mat4():target(
+        p_ref,
+        p_ref + vec3(curve_ref:getTangent(ts[i])),
+        up)
+      curveTransforms[i] = t_tgt:mul(t_ref:invert())
+    end
+  end
+  -- apply nearest transfrom to each vertex
+  for i, vn in ipairs(solid.vlist) do
+    local nearestT = curveTransforms[curveIndexFromMesh[vn]]
+    local v = vec3(unpack(vn))
+    v = nearestT:mul(v)
+    vn[1] = v.x
+    vn[2] = v.y
+    vn[3] = v.z
+  end
+  return solid
 end
 
 
@@ -244,36 +356,102 @@ end
 -- Any other vertex data (material information, baked lighting) would go after and can be modified
 -- This function applies same data to all the vertices
 function m:bakeFill(...)
+  if self.normals_dirty then self:updateNormals() end
   local vertex_attributes = {...}
   return self:map(function(...)
     local v = {...}
+    local l = #v
     for i, vertex_attribute in ipairs(vertex_attributes) do
-      v[6 + i] = vertex_attribute
+      v[l + i] = vertex_attribute
     end
     return unpack(v)
   end)
 end
 
 
---- Create new solid identical to existing one.
-function m:clone()
-  local other = m.new()
-  for i, vertex in ipairs(self.vlist) do
-    other.vlist[i] = {unpack(vertex)}
+function m:setColor(r_or_table_or_vec, g, b, a)
+  local r
+  if type(r_or_table_or_vec) == 'userdata' then
+    r, g, b, a = r_or_table_or_vec:unpack()
+  elseif type(r_or_table_or_vec) == 'table' then
+    r, g, b, a = unpack(r_or_table_or_vec)
+  elseif type(r_or_table_or_vec) == 'number' then
+    r = r_or_table_or_vec
+    g = g or r
+    b = b or g
+  else
+    error(string.format(
+      'unsupported %s; use setColor(r, g, b) or setColor({r, g, b}) or setColor(vec3(r, g, b))',
+      type(r_or_table_or_vec)))
   end
-  for i, index in ipairs(self.ilist) do
-    other.ilist[i] = index
+  a = a or 1
+  r, g, b = lovr.math.gammaToLinear(r, g, b)
+  return self:map(function(...)
+    local x, y, z, nx, ny, nz = ...
+    nx, ny, nz = nx or 0, ny or 0, nz or 0
+    return x, y, z, nx, ny, nz, r, g, b, a
+  end)
+end
+
+
+function m:makeOutline(amount, color)
+  amount = amount or 0.03
+  color = color or { 0.1, 0.1, 0.1 }
+  if self.normals_dirty then self:updateNormals() end
+  precision = amount * 0.25
+  local outline = m.new()
+  local groups = {}         -- hash -> { vertexIndices... }
+  local a, b, c = vec3(), vec3(), vec3()
+  for i = 1, #self.ilist, 3 do
+    local i1, i2, i3 = self.ilist[i], self.ilist[i + 1], self.ilist[i + 2]
+    local v1, v2, v3 = self.vlist[i1], self.vlist[i2], self.vlist[i3]
+    a:set(v1[1], v1[2], v1[3])
+    b:set(v2[1], v2[2], v2[3])
+    c:set(v3[1], v3[2], v3[3])
+    local n = vec3(b):sub(a):cross(vec3(c):sub(a)):normalize()
+    local pa = a + n * amount
+    local pb = b + n * amount
+    local pc = c + n * amount
+    local ia = #outline.vlist + 1
+    table.insert(outline.vlist, { pa.x, pa.y, pa.z, -n.x, -n.y, -n.z })
+    local ib = #outline.vlist + 1
+    table.insert(outline.vlist, { pb.x, pb.y, pb.z, -n.x, -n.y, -n.z })
+    local ic = #outline.vlist + 1
+    table.insert(outline.vlist, { pc.x, pc.y, pc.z, -n.x, -n.y, -n.z })
+    table.insert(outline.ilist, ib)
+    table.insert(outline.ilist, ia)
+    table.insert(outline.ilist, ic)
+    local ha = precisionHash(precision, a.x, a.y, a.z)
+    local hb = precisionHash(precision, b.x, b.y, b.z)
+    local hc = precisionHash(precision, c.x, c.y, c.z)
+    groups[ha] = groups[ha] or {}; table.insert(groups[ha], ia)
+    groups[hb] = groups[hb] or {}; table.insert(groups[hb], ib)
+    groups[hc] = groups[hc] or {}; table.insert(groups[hc], ic)
   end
-  for side, ilist in pairs(self.sides) do
-    other.sides[side] = {}
-    for i, index in ipairs(ilist) do
-      other.sides[side][i] = index
+  local acc = vec3()
+  for _, groupH in pairs(groups) do
+    acc:set(0, 0, 0)
+    for _, vi in ipairs(groupH) do
+      local v = outline.vlist[vi]
+      acc:add(v[1], v[2], v[3])
+    end
+    acc:mul(1 / #groupH)
+    for _, vi in ipairs(groupH) do
+      local v = outline.vlist[vi]
+      v[1], v[2], v[3] = acc.x, acc.y, acc.z
     end
   end
-  other.vbuffer_format = self.vbuffer_format
-  other.ibuffer_format = self.ibuffer_format
-  other.normals_dirty = self.normals_dirty
-  return other
+  outline.normals_dirty = false
+  outline = outline:setColor(color)
+  return outline
+end
+
+
+---  Adds an outline (scaled‐up, face‑winding reversed, coloured) to the solid.
+--  Returns same solid that contains the original solid and the outline.
+function m:addOutline(amount, color)
+  -- Reuse the outline geometry built by makeOutline and merge the original in.
+  return self:makeOutline(amount, color):mergeIn({ self })
 end
 
 
@@ -300,6 +478,70 @@ function m:separateFaces()
 end
 
 
+--- Identify triangles facing same way, merge into polygons
+-- Returns faces, which is a list of lists of indices
+function m:mergeTrianglesIntoPolygons(precision)
+  precision = precision or 0.01
+  if not self.ilist then return {} end
+  -- build a mapping from a vertex to adjacent triangle indices
+  local triangleFromVertex = {}
+  for i = 1, #self.ilist, 3 do
+    local vertexIndex = self.ilist[i + 0]
+    triangleFromVertex[vertexIndex] = triangleFromVertex[vertexIndex] or {}
+    table.insert(triangleFromVertex[vertexIndex], i)
+    local vertexIndex = self.ilist[i + 1]
+    triangleFromVertex[vertexIndex] = triangleFromVertex[vertexIndex] or {}
+    table.insert(triangleFromVertex[vertexIndex], i)
+    local vertexIndex = self.ilist[i + 2]
+    triangleFromVertex[vertexIndex] = triangleFromVertex[vertexIndex] or {}
+    table.insert(triangleFromVertex[vertexIndex], i)
+  end
+  -- calculate triangle normals and keep mapping from triangle index to its normal
+  local normals = {}
+  local v1, v2, v3 = vec3(), vec3(), vec3()
+  for i = 1, #self.ilist, 3 do
+    local vi1, vi2, vi3 = self.ilist[i], self.ilist[i + 1], self.ilist[i + 2]
+    v1:set(unpack(self.vlist[vi1]))
+    v2:set(unpack(self.vlist[vi2]))
+    v3:set(unpack(self.vlist[vi3]))
+    normals[i] = v2:sub(v1):cross(v3:sub(v1)):normalize()
+  end
+  -- merge adjacent triangles with same normals into faces
+  local visited = {}
+  local faces = {}
+  for i = 1, #self.ilist, 3 do
+    if not visited[i] then
+      visited[i] = true
+      local face = {self.ilist[i], self.ilist[i + 1], self.ilist[i + 2]}
+      local stack = {i}
+      while #stack > 0 do
+        local tri = table.remove(stack)
+        local hash = precisionHash(precision, normals[tri]:unpack())
+        face.normal = Vec3(normals[tri])
+        -- find all adjacent triangles which are not visited and have same normal
+        for j = 0, 2 do
+          local vertexIndex = self.ilist[tri + j]
+          for _, adjacentTri in ipairs(triangleFromVertex[vertexIndex]) do
+            if not visited[adjacentTri] then
+              local adjhash = precisionHash(precision, normals[adjacentTri]:unpack())
+              if adjhash == hash then
+                table.insert(face, self.ilist[adjacentTri])
+                table.insert(face, self.ilist[adjacentTri + 1])
+                table.insert(face, self.ilist[adjacentTri + 2])
+                visited[adjacentTri] = true
+                table.insert(stack, adjacentTri)
+              end
+            end
+          end
+        end
+      end
+      table.insert(faces, face)
+    end
+  end
+  return faces
+end
+
+
 --- Create solid with flipped vertex order.
 -- Reverses the face normals by changing the triangle winding.
 function m:flipWinding()
@@ -321,7 +563,17 @@ end
 --           C
 function m:subdivide()
   local function halfway(p1, p2)
-    return {(p1[1] + p2[1]) / 2, (p1[2] + p2[2]) / 2, (p1[3] + p2[3]) / 2}
+    local v = {}
+    if p1[1] and p2[1] then -- position
+      v[1], v[2], v[3] = (p1[1] + p2[1]) / 2, (p1[2] + p2[2]) / 2, (p1[3] + p2[3]) / 2
+    end
+    if p1[4] and p2[4] then -- normals (result not normalized)
+      v[4], v[5], v[6] = (p1[4] + p2[4]) / 2, (p1[5] + p2[5]) / 2, (p1[6] + p2[6]) / 2
+    end
+    if p1[7] and p2[7] then -- rgb color
+      v[7], v[8], v[9] = (p1[7] + p2[7]) / 2, (p1[8] + p2[8]) / 2, (p1[9] + p2[9]) / 2
+    end
+    return v
   end
   local other = self.new()
   local vertices = {}
@@ -347,33 +599,118 @@ function m:subdivide()
 end
 
 
+-- remove degenerate triangles
+function m:clean()
+  local function is_degenerate(v1, v2, v3)
+    local vec1 = vec3(v2[1] - v1[1], v2[2] - v1[2], v2[3] - v1[3])
+    local vec2 = vec3(v3[1] - v1[1], v3[2] - v1[2], v3[3] - v1[3])
+    local cross_product = vec1:cross(vec2)
+    return cross_product:length() < 1e-6 -- Threshold for degeneracy
+  end
+  local new_vertices = {}
+  local new_indices = {}
+  local vertex_map = {} -- Map old vertex indices to new ones
+
+  for _, vertex in ipairs(self.vlist) do
+    table.insert(new_vertices, vertex)
+  end
+
+  local indices = self.ilist
+  for i = 1, #indices, 3 do
+    local v1_index = indices[i]
+    local v2_index = indices[i + 1]
+    local v3_index = indices[i + 2]
+    local v1 = new_vertices[v1_index]
+    local v2 = new_vertices[v2_index]
+    local v3 = new_vertices[v3_index]
+    if not is_degenerate(v1, v2, v3) then
+      table.insert(new_indices, v1_index)
+      table.insert(new_indices, v2_index)
+      table.insert(new_indices, v3_index)
+    end
+  end
+  return m.fromVertices(new_vertices, new_indices)
+end
+
+
 --- Converts flat list of triangle indices to flat list of line indices.
 -- Edges shared between triangles are not repeated.
 --     eg. {1,2,3,  2,3,4} -> {1,2, 2,3, 3,1, 3,4, 4,2}
-function m:triangleToLine()
+function m:triangleToLine(threshold)
+  threshold = threshold or 0
+  self:updateNormals()
   local line_pairs = {}
+
+  local function calculateNormal(i1, i2, i3)
+    local v1 = vec3(self.vlist[i1][1], self.vlist[i1][2], self.vlist[i1][3])
+    local v2 = vec3(self.vlist[i2][1], self.vlist[i2][2], self.vlist[i2][3])
+    local v3 = vec3(self.vlist[i3][1], self.vlist[i3][2], self.vlist[i3][3])
+    local edge1 = v2:sub(v1)
+    local edge2 = v3:sub(v1)
+    return edge1:cross(edge2):normalize()
+  end
+
+  local function listToHash(i1, i2)
+    return math.min(i1, i2) * 1000000 + math.max(i1, i2)
+  end
+
   for i = 1, #self.ilist, 3 do
     local i1, i2, i3 = self.ilist[i], self.ilist[i+1], self.ilist[i+2]
-    line_pairs[listToHash(i1, i2)] = {i1, i2}
-    line_pairs[listToHash(i2, i3)] = {i2, i3}
-    line_pairs[listToHash(i3, i1)] = {i3, i1}
+    local normal = calculateNormal(i1, i2, i3)
+
+    line_pairs[listToHash(i1, i2)] = {i1, i2, normal}
+    line_pairs[listToHash(i2, i3)] = {i2, i3, normal}
+    line_pairs[listToHash(i3, i1)] = {i3, i1, normal}
   end
+
+  local function calculateAngle(normal1, normal2)
+    local dot_product = normal1:dot(normal2)
+    -- Clamp the dot product to avoid numerical issues
+    dot_product = math.max(-1, math.min(1, dot_product))
+    return math.acos(dot_product)
+  end
+
   local line_indices = {}
-  for _, line_pair in pairs(line_pairs) do
-    table.insert(line_indices, line_pair[1])
-    table.insert(line_indices, line_pair[2])
+
+  for hash, line_pair in pairs(line_pairs) do
+    local i1, i2, normal1 = line_pair[1], line_pair[2], line_pair[3]
+    local shared = false
+
+    for other_hash, other_line_pair in pairs(line_pairs) do
+      if other_hash ~= hash then
+        local other_i1, other_i2, normal2 = other_line_pair[1], other_line_pair[2], other_line_pair[3]
+        if (other_i1 == i1 and other_i2 == i2) or (other_i1 == i2 and other_i2 == i1) then
+          local angle = calculateAngle(normal1, normal2)
+          if angle >= threshold then
+            table.insert(line_indices, i1)
+            table.insert(line_indices, i2)
+          end
+          shared = true
+          break
+        end
+      end
+    end
+
+    if not shared then
+      table.insert(line_indices, i1)
+      table.insert(line_indices, i2)
+    end
   end
+
   local other = self:clone()
   other.ilist = line_indices
+  other:refresh()
+  other.mesh:setDrawMode('lines')
   return other
 end
 
 
 --- Combine triangles from two or more solids into a merged solid.
--- Note that all geometry is preserved (even invisible insides),
--- for better results use the union operator from CSG module.
+-- Note that all geometry is preserved, even the invisible insides.
+-- If insides should be rejected instead use the union operator from CSG module.
 function m.merge(solidsList)
   local other = m.new()
+  other.normals_dirty = false
   for _, another in ipairs(solidsList) do
     local offset = #other.vlist
     listappend(other.vlist, another.vlist)
@@ -384,6 +721,24 @@ function m.merge(solidsList)
   end
   return other
 end
+
+
+function m:mergeIn(solid_or_list)
+  assert(type(solid_or_list) == 'table', 'mergeIn works only on solid or {} list of solids')
+  if solid_or_list.mergeIn then
+    solid_or_list = { solid_or_list }
+  end
+  for _, another in ipairs(solid_or_list) do
+    local offset = #self.vlist
+    listappend(self.vlist, another.vlist)
+    for _, index in ipairs(another.ilist) do
+      table.insert(self.ilist, index + offset)
+    end
+    self.normals_dirty = self.normals_dirty or self.normals_dirty
+  end
+  return self
+end
+
 
 
 --- Retrieves a map of connections between vertex indices in a solid.
@@ -413,7 +768,7 @@ function m:updateNormals()
       self.ilist[i] = i
     end
   end
-  if #self.ilist < 3 then return end
+  if #self.ilist < 3 then return self end
   local normals = {} -- maps vertex index to list of normals of adjacent faces
   local v1, v2, v3 = vec3(), vec3(), vec3()
   for i = 1, #self.ilist, 3 do
@@ -431,7 +786,7 @@ function m:updateNormals()
   end
   local vnormal, tvec3 = vec3(), vec3()
   for i = 1, #self.vlist do
-    assert(normals[i], 'no triangle in index list contains vertex ' .. i)
+    --assert(normals[i], 'no triangle in index list contains vertex ' .. i)
     if normals[i] then
       vnormal:set(0,0,0)
       local c = 0
@@ -442,10 +797,31 @@ function m:updateNormals()
       vnormal:mul(1 / c)
       local v = self.vlist[i]
       v[4], v[5], v[6] = vnormal:normalize():unpack()
+      v[7], v[8], v[9] = v[7] or 1, v[8] or 1, v[9] or 1
     end
   end
   self.normals_dirty = false
   return self
+end
+
+
+function m:jiggleNormals(amount)
+  local other = self:clone():updateNormals()
+  for i, v in ipairs(other.vlist) do
+    local pos = vec3(v[1], v[2], v[3])
+    local normal = vec3(v[4], v[5], v[6])
+    normal:add(
+      --(lovr.math.noise((pos * 10):unpack()) - 0.5) * amount,
+      --(lovr.math.noise((pos * 10):unpack()) - 0.5) * amount,
+      --(lovr.math.noise((pos * 10):unpack()) - 0.5) * amount
+      (lovr.math.random() - 0.5) * amount,
+      (lovr.math.random() - 0.5) * amount,
+      (lovr.math.random() - 0.5) * amount
+      ):normalize()
+    v[4], v[5], v[6] = normal:unpack()
+  end
+  other.normals_dirty = false
+  return other
 end
 
 
@@ -472,21 +848,23 @@ function m:calculateBoundingBox()
     maxz = math.max(maxz, z)
   end
   self.mesh:setBoundingBox(minx, maxx, miny, maxy, minz, maxz)
+  return minx, maxx, miny, maxy, minz, maxz
 end
 
 
 -- Regenerate the mesh object from vertices and indices
 function m:refresh()
+  if self.normals_dirty then self:updateNormals() end
   self.mesh = lovr.graphics.newMesh(self.vbuffer_format, self.vlist, 'cpu')
   self.mesh:setIndices(self.ilist)
   self:calculateBoundingBox()
+  return self
 end
 
 
 --- Draw the solid mesh in the supplied pass.
 function m:draw(pass, ...)
   if #self.ilist < 3 then return end
-  if self.normals_dirty then self:updateNormals() end
   if not self.mesh then
     self:refresh()
   end
@@ -519,8 +897,9 @@ function m:debugDraw(pass, ...)
                       randomGenerator:randomNormal(0.02, 0),
                       randomGenerator:randomNormal(0.02, 0))
     pass:setColor(0xffffb2)
-    pass:text(i, ap, 0.02)
+    pass:text(i, ap, 0.08)
   end
+  pass:setWireframe(false)
   pass:pop('state')
 end
 
@@ -532,8 +911,67 @@ function m.new()
     vlist = {}, -- vertices
     ilist = {}, -- indices
     sides = {}, -- maps side name to index list (eg. 'top' = {1,2,3,4})
-    normals_dirty = true
+    normals_dirty = true,
+    mesh = nil,
   }, m)
+  return self
+end
+
+
+--- Create new solid identical to existing one.
+function m:clone()
+  local other = m.new()
+  for i, vertex in ipairs(self.vlist) do
+    other.vlist[i] = {unpack(vertex)}
+  end
+  for i, index in ipairs(self.ilist) do
+    other.ilist[i] = index
+  end
+  for side, ilist in pairs(self.sides) do
+    other.sides[side] = {}
+    for i, index in ipairs(ilist) do
+      other.sides[side][i] = index
+    end
+  end
+  other.vbuffer_format = self.vbuffer_format
+  other.ibuffer_format = self.ibuffer_format
+  other.normals_dirty = self.normals_dirty
+  return other
+end
+
+
+function m.fromCurve(curve, width, n, DTS)
+  width = width or 1
+  n = n or 32
+  DTS = DTS or 10
+  local self = m.new()
+  local indicesA, indicesB = {}, {}
+  local v1, v2, v3 = vec3(), vec3(), vec3()
+  local dt = 1 / (DTS * n)
+  local step = (1 - 2 * dt) / n
+  local normals = {}
+  local points = {}
+  for i = 0, n  do
+    local t = dt + i * step
+    v1:set(curve:evaluate(t - dt))
+    v2:set(curve:evaluate(t))
+    v3:set(curve:evaluate(t + dt))
+    table.insert(points, lovr.math.newVec3(v2))
+    v1:mul(-1):add(v2)  --  v2 - v1
+    v3:sub(v2)          --  v3 - v2
+    v3:cross(v1):normalize()
+    table.insert(normals, lovr.math.newVec3(v3))
+  end
+  for i = 1, #normals do
+    v2:set(normals[i]):mul(width)
+    v1:set(points[i]):add(v2)
+    v3:set(points[i]):sub(v2)
+    table.insert(self.vlist, {v1:unpack()})
+    table.insert(indicesA, #self.vlist)
+    table.insert(self.vlist, {v3:unpack()})
+    table.insert(indicesB, #self.vlist)
+  end
+  self.ilist = m.sewindices(indicesA, indicesB)
   return self
 end
 
@@ -597,210 +1035,99 @@ function m.fromModel(model)
 end
 
 
-function m.convexHull(point_cloud)
-  if #point_cloud < 4 then
-    local vertices = {}
-    for i, point in ipairs(point_cloud) do
-      vertices[i] = { point:unpack() }
-    end
-    return m.fromVertices(vertices)
-  end
-  local points = shuffle(point_cloud)
-  local tetrahedron
-  -- initial tetrahedron; take 4 randomized points (to help avoid coplanars)
-  local attempts = 0
-  while true do
-    attempts = attempts + 1
-    tetrahedron = {}
-    for i = 1, 4 do
-      table.insert(tetrahedron, points[i])
-    end
-    if math.abs(m.trianglePointDistance(tetrahedron, tetrahedron[4])) > EPSILON then
-      break
-    else
-      if attempts > 5 or #points < 5 then
-        local vertices = {}
-        for i, point in ipairs(point_cloud) do
-          vertices[i] = { point:unpack() }
-        end
-        return m.fromVertices(vertices)
-      end
-      for i = 1, 4 do -- take different set of 4 points for initial tetrahedron
-        local rnd_index = lovr.math.random(5, #points)
-        points[i], points[rnd_index] = points[rnd_index], points[i]
-      end
-    end
-  end
+--- Construct a solid from LOVR's Mesh object.
+function m.fromMesh(mesh)
+  assert(type(mesh) == 'userdata' and mesh.getVertices, 'unsupported input')
+  return m.fromVertices(mesh:getVertices(), mesh:getIndices())
+end
 
-  -- construct faces of intial convex hull with correct triangle windings
-  local faces = {} -- list of triangles {{i1,i2,i3},} where i indexes input list of points
-  local center = (tetrahedron[1] + tetrahedron[2] + tetrahedron[3] + tetrahedron[4]):mul(1 / 4)
-  for i = 1, 4 do
-    local face = { i,
-                   1 + (i + 1) % 4,
-                   1 + (i + 2) % 4 }
-    local triangle = {tetrahedron[face[1]], tetrahedron[face[2]], tetrahedron[face[3]]}
-    if m.trianglePointDistance(triangle, center) > 0 then
-      face[2], face[3] = face[3], face[2]
+
+--- Construct a solid from LOVR's Mesh object, handling a mesh that is subset of another
+function m.fromModelSlice(model, index)
+  local mesh = model:getMesh(index)
+  local indices  = mesh:getIndices()
+  local vertices = mesh:getVertices()
+  local combined_vertices = {}
+  for meshIndex = 1, model:getMeshCount() do
+    local mesh = model:getMesh(meshIndex)
+    local start, count, offset = mesh:getDrawRange()
+    for i = start, start + count - 1 do
+      local v = vertices[indices[i] + offset]
+      table.insert(combined_vertices, { unpack(v) })
     end
-    table.insert(faces, face)
   end
-  -- iterate points and add to convex_hull
-  for i = 5, #points do
-    local point = points[i]
-    local conflicting_faces = {}
-    for _, face in ipairs(faces) do
-      local triangle = {points[face[1]], points[face[2]], points[face[3]]}
-      if m.trianglePointDistance(triangle, point) > EPSILON then
-        table.insert(conflicting_faces, face)
-      end
-    end
-    if #conflicting_faces > 0 then -- add a conflict point to convex hull
-      -- determine horizon, a ring of outer edges visible from the new pont
-      local horizon = {} -- set of edges that belong to horizon
-      local added_index = i
-      for _, cface in ipairs(conflicting_faces) do
-        for j = 1, 3 do
-          local i1, i2 = cface[j], cface[1 + j % 3]
-          local hash = listToHash(math.min(i1, i2), math.max(i1, i2))
-          -- each internal edge is referenced by two triangles, horizon edges have just one
-          if horizon[hash] then
-            horizon[hash] = nil
-          else
-            horizon[hash] = true
-          end
-        end
-        -- find & remove conflicting face
-        for j, face in ipairs(faces) do
-          if face[1] == cface[1] and
-             face[2] == cface[2] and
-             face[3] == cface[3] then
-            table.remove(faces, j)
-            break
-          end
-        end
-      end
-      -- add faces to convex hull that connect the horizon edges to the added conflict point
-      for edge, _ in pairs(horizon) do
-        local i1, i2 = hashToList(edge)
-        local face = {i1, i2, added_index}
-        local triangle = {points[face[1]], points[face[2]], points[face[3]]}
-        if m.trianglePointDistance(triangle, center) > 0 then
-          face[2], face[3] = face[3], face[2]
-        end
-        table.insert(faces, face)
-      end
-    end -- else the point is already inside the hull and therefore discarded
-  end
-  -- build vertices and indices from hull faces
+  return m.fromVertices(combined_vertices)
+end
+
+
+--- Extract convex hull from LOVR's ConvexShape object.
+function m.fromConvexShape(shape)
   local vertices, indices = {}, {}
-  local input_to_hull = {} -- maps indices of input points to indices of convex hull points
-  for _, face in ipairs(faces) do
-    for _, index in ipairs(face) do
-      if not input_to_hull[index] then
-        table.insert(vertices, {points[index]:unpack()})
-        input_to_hull[index] = #vertices
-      end
-      table.insert(indices, input_to_hull[index])
+  for i = 1, shape:getPointCount() do
+    local x, y, z = shape:getPoint(i)
+    table.insert(vertices, {x, y, z})
+  end
+  for i = 1, shape:getFaceCount() do
+    local face_indices = shape:getFace(i)
+    for j = 2, #face_indices - 1 do
+      table.insert(indices, face_indices[1])
+      table.insert(indices, face_indices[j])
+      table.insert(indices, face_indices[j + 1])
     end
   end
   return m.fromVertices(vertices, indices)
 end
 
 
---- Efficiently add a point to existing convex hull (modifies the solid in place)
-function m:addToConvexHull(point)
-  table.insert(self.vlist, {point:unpack()})
-  if #self.vlist < 4 then
-    return self
-  end
-  local center = (vec3(unpack(self.vlist[1])) +
-                  vec3(unpack(self.vlist[2])) +
-                  vec3(unpack(self.vlist[3])) +
-                  vec3(unpack(self.vlist[4]))):mul(1 / 4)
-  if #self.vlist == 4 then
-    -- construct faces of intial convex hull with correct triangle windings
-    for i = 1, 4 do
-      local face = { i,
-                     1 + (i + 1) % 4,
-                     1 + (i + 2) % 4 }
-      local triangle = { vec3(unpack(self.vlist[face[1]])),
-                         vec3(unpack(self.vlist[face[2]])),
-                         vec3(unpack(self.vlist[face[3]])) }
-      if m.trianglePointDistance(triangle, center) > 0 then
-        face[2], face[3] = face[3], face[2]
-      end
-      listappend(self.ilist, face)
+function m:toObjString()
+  local content = {}
+  -- vertices
+  for i, vertex in ipairs(self.vlist) do
+    if vertex[7] and vertex[8] and vertex[9] then
+      table.insert(content, string.format("v %f %f %f %f %f %f", vertex[1], vertex[2], vertex[3], vertex[7], vertex[8], vertex[9]))
+    else
+      table.insert(content, string.format("v %f %f %f", vertex[1], vertex[2], vertex[3]))
     end
-    return m.fromVertices(self.vlist, self.ilist):updateNormals()
   end
-  local faces = {}
+  -- normals
+  for i, vertex in ipairs(self.vlist) do
+    if vertex[4] and vertex[5] and vertex[6] then
+      table.insert(content, string.format("vn %f %f %f", vertex[4], vertex[5], vertex[6]))
+    end
+  end
+  -- faces
   for i = 1, #self.ilist, 3 do
-    table.insert(faces, {self.ilist[i], self.ilist[i + 1], self.ilist[i + 2]})
+    local i1, i2, i3 = self.ilist[i], self.ilist[i+1], self.ilist[i+2]
+    table.insert(content, string.format("f %d//%d %d//%d %d//%d",
+      i1, i1, i2, i2, i3, i3))
   end
-  local conflicting_faces = {}
-  for _, face in ipairs(faces) do
-    local triangle = {vec3(unpack(self.vlist[face[1]])),
-                      vec3(unpack(self.vlist[face[2]])),
-                      vec3(unpack(self.vlist[face[3]]))}
-    if m.trianglePointDistance(triangle, point) > EPSILON then
-      table.insert(conflicting_faces, face)
-    end
+  return table.concat(content, '\n')
+end
+
+--- Create a convex hull from set of vertices.
+function m.convexHull(vertices_in)
+  if #vertices_in < 4 then
+    return m.new()
   end
-  if #conflicting_faces > 0 then -- add a conflict point to convex hull
-    -- determine horizon, a ring of outer edges visible from the new pont
-    local horizon = {} -- set of edges that belong to horizon
-    local added_index = #self.vlist
-    for _, cface in ipairs(conflicting_faces) do
-      for j = 1, 3 do
-        local i1, i2 = cface[j], cface[1 + j % 3]
-        local hash = listToHash(math.min(i1, i2), math.max(i1, i2))
-        if horizon[hash] then
-          horizon[hash] = nil
-        else
-          horizon[hash] = true
-        end
-      end
-      -- find & remove conflicting face
-      for j, face in ipairs(faces) do
-        if face[1] == cface[1] and
-           face[2] == cface[2] and
-           face[3] == cface[3] then
-          table.remove(faces, j)
-          break
-        end
-      end
-    end
-    -- add faces to convex hull that connect the horizon edges to the added conflict point
-    for edge, _ in pairs(horizon) do
-      local i1, i2 = hashToList(edge)
-      local face = {i1, i2, added_index}
-      local triangle = {vec3(unpack(self.vlist[face[1]])),
-                        vec3(unpack(self.vlist[face[2]])),
-                        vec3(unpack(self.vlist[face[3]]))}
-      if m.trianglePointDistance(triangle, center) > 0 then
-        face[2], face[3] = face[3], face[2]
-      end
-      table.insert(faces, face)
-    end
-  end -- else the point is already inside the hull and therefore discarded
-  -- build vertices from used points, and indices
-  local vertices, indices = {}, {}
-  local input_to_hull = {} -- maps indices of input points to indices of convex hull points
-  for _, face in ipairs(faces) do
-    for _, index in ipairs(face) do
-      if not input_to_hull[index] then
-        table.insert(vertices, self.vlist[index])
-        input_to_hull[index] = #vertices
-      end
-      table.insert(indices, input_to_hull[index])
+  assert(lovr.physics, 'lovr physics module needs to be enabled in conf.lua')
+  local vertices = {}
+  for i, vertex in ipairs(vertices_in) do
+    if type(vertex) == 'userdata' then
+      vertices[i] = { vertex:unpack() }
+    else
+      vertices[i] = vertex
     end
   end
-  return m.fromVertices(vertices, indices):updateNormals()
+  local shape = lovr.physics.newConvexShape(vertices)
+  local hull = m.fromConvexShape(shape)
+  return hull, shape
 end
 
 
-function m.superellipsePoints(segments, ax, ay, az, e1, e2)
+local function superellipsoidPoints(segments, sx, sy, sz, e1, e2)
+  segments = segments or 12
+  sx, sy, sz = sx or 1, sy or 1, sz or 1
+  e1, e2 = e1 or 0.5, e2 or 0.5
   local points = {}
   local function sgn(n)
     return (n >= 0) and 1 or -1
@@ -808,17 +1135,26 @@ function m.superellipsePoints(segments, ax, ay, az, e1, e2)
   for theta = -math.pi / 2, math.pi / 2, math.pi / segments do
     for gamma = -math.pi, math.pi, math.pi / segments do
       points[#points + 1] = lovr.math.newVec3(
-        ax * math.cos(theta)^e1 * math.abs(math.cos(gamma))^e2 * sgn(math.cos(gamma)),
-        ay * math.cos(theta)^e1 * math.abs(math.sin(gamma))^e2 * sgn(math.sin(gamma)),
-        az * math.abs(math.sin(theta))^e1 * sgn(math.sin(theta)))
+        sx * math.cos(theta)^e1 * math.abs(math.cos(gamma))^e2 * sgn(math.cos(gamma)),
+        sy * math.cos(theta)^e1 * math.abs(math.sin(gamma))^e2 * sgn(math.sin(gamma)),
+        sz * math.abs(math.sin(theta))^e1 * sgn(math.sin(theta)))
     end
   end
   return points
 end
 
 
-function m.superellipse(segments, ax, ay, az, e1, e2)
-  return m.convexHull(m.superellipsePoints(segments, ax, ay, az, e1, e2))
+--- Super ellipsoids are family of shapes that contains cube, sphere, and in-betweens.
+--[[
+Some special cases for e1, e2 parameters
+  0,   0    cube
+  1,   1    sphere
+  0,   1    cylinder
+  2,   2    octahedron
+  0.1, 0.1  round cube
+--]]
+function m.superellipsoid(segments, sx, sy, sz, e1, e2)
+  return m.convexHull(superellipsoidPoints(segments, sx, sy, sz, e1, e2))
 end
 
 
@@ -850,7 +1186,7 @@ function m.ngon(segments)
     local theta, v1, v2, vi1, vi2
     theta = i * (2 * math.pi) / segments;
     v1 = {0.5 * math.cos(theta),  0.5 * math.sin(theta), 0}
-    theta = (i + 1) * (2 * math.pi) / segments;
+    theta = (i + 1) * (2 * math.pi) / segments
     v2 = {0.5 * math.cos(theta),  0.5 * math.sin(theta), 0}
     table.insert(self.vlist, v1)
     table.insert(self.vlist, v2)
