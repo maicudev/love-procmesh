@@ -73,8 +73,8 @@ end
 local m = {}
 
 m.__index = m
-m.__add = function (lhs, rhs) return lhs:union(rhs) end
-m.__sub = function (lhs, rhs) return lhs:subtract(rhs) end
+m.__add = function (lhs, rhs) return lhs:add(rhs) end
+m.__sub = function (lhs, rhs) return lhs:sub(rhs) end
 m.__mul = function (lhs, rhs) return lhs:intersect(rhs) end
 
 
@@ -158,7 +158,7 @@ end
 --          |   B   |             |       |
 --          |       |             |       |
 --          +-------+             +-------+
-function m:union(csg) 
+function m:add(csg)
   local a = m.Node.new(self:clone().polygons)
   local b = m.Node.new(csg:clone().polygons)
   a:clipTo(b)
@@ -181,7 +181,7 @@ end
 --          |       |
 --          +-------+
 -- 
-function m:subtract(csg)
+function m:sub(csg)
   local a = m.Node.new(self:clone().polygons)
   local b = m.Node.new(csg:clone().polygons)
   a:invert()
