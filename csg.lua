@@ -108,10 +108,19 @@ function m.fromSolid(solid, shared)
     local v1 = solid.vlist[solid.ilist[i + 0]]
     local v2 = solid.vlist[solid.ilist[i + 1]]
     local v3 = solid.vlist[solid.ilist[i + 2]]
+
+    local v1p = vector(v1[1], v1[2], v1[3])
+    local v1n = vector(v1[4], v1[5], v1[6])
+    local v2p = vector(v2[1], v2[2], v2[3])
+    local v2n = vector(v2[4], v2[5], v2[6])
+    local v3p = vector(v3[1], v3[2], v3[3])
+    local v3n = vector(v3[4], v3[5], v3[6])
+
     local triangle = {
-      m.Vertex.new(vec3(unpack(v1)), vec3(select(4, unpack(v1)))),
-      m.Vertex.new(vec3(unpack(v2)), vec3(select(4, unpack(v2)))),
-      m.Vertex.new(vec3(unpack(v3)), vec3(select(4, unpack(v3))))}
+      m.Vertex.new(v1p, v1n),
+      m.Vertex.new(v2p, v2n),
+      m.Vertex.new(v3p, v3n)
+    }
     table.insert(self.polygons, m.Polygon.new(triangle, shared))
   end
   return self
@@ -128,14 +137,14 @@ function m:clone()
 end
 
 
-function m:transform(m)
-  local x,y,z
+function m:transform(mat)
   local transformed = {}
   for i, polygon in ipairs(self.polygons) do
     for j, v in ipairs(polygon.vertices) do
       if not transformed[v] then
-        v.pos.x, v.pos.y, v.pos.z = m:mul(v.pos.x, v.pos.y, v.pos.z)
-        v.normal.x, v.normal.y, v.normal.z = m:mul(v.normal.x, v.normal.y, v.normal.z)
+        v.pos = mat * v.pos
+        -- Use w=0 for transforming normals
+        v.normal = mat:mul(v.normal, 0)
         transformed[v] = true
       end
     end
@@ -180,7 +189,7 @@ end
 --          |   B   |
 --          |       |
 --          +-------+
--- 
+--
 function m:sub(csg)
   local a = m.Node.new(self:clone().polygons)
   local b = m.Node.new(csg:clone().polygons)
@@ -205,7 +214,7 @@ end
 --          |   B   |
 --          |       |
 --          +-------+
--- 
+--
 function m:intersect(csg)
   local a = m.Node.new(self:clone().polygons)
   local b = m.Node.new(csg:clone().polygons)
@@ -241,9 +250,9 @@ m.Vertex = {}
 m.Vertex.__index = m.Vertex
 
 function m.Vertex.new(pos, normal)
-  local self = setmetatable({}, m.Vertex)  
-  self.pos = lovr.math.newVec3(pos)
-  self.normal = lovr.math.newVec3(normal)
+  local self = setmetatable({}, m.Vertex)
+  self.pos = vector(pos.x or pos[1] or 0, pos.y or pos[2] or 0, pos.z or pos[3] or 0)
+  self.normal = vector(normal.x or normal[1] or 0, normal.y or normal[2] or 0, normal.z or normal[3] or 0)
   return self
 end
 
@@ -256,7 +265,7 @@ end
 -- Invert all orientation-specific data (e.g. vertex normal). Called when the
 -- orientation of a polygon is flipped.
 function m.Vertex:flip()
-  self.normal:mul(-1)
+  self.normal = self.normal * -1
 end
 
 
@@ -265,8 +274,8 @@ end
 -- override self.to interpolate additional properties.
 function m.Vertex:interpolate(other, t)
   return m.Vertex.new(
-    vec3(self.pos):lerp(other.pos, t),
-    vec3(self.normal):lerp(other.normal, t)
+    self.pos:lerp(other.pos, t),
+    self.normal:lerp(other.normal, t)
   )
 end
 
@@ -282,26 +291,26 @@ m.Plane.__index = m.Plane
 
 function m.Plane.new(normal, w)
   local self = setmetatable({}, m.Plane)
-  self.normal = lovr.math.newVec3(normal)
+  self.normal = vector(normal.x or normal[1] or 0, normal.y or normal[2] or 0, normal.z or normal[3] or 0)
   self.w = w
   return self
 end
 
 
 function m.Plane.fromPoints(a, b, c)
-  local n = vec3(b):sub(a):cross(vec3(c):sub(a)):normalize()
+  local n = (b - a):cross(c - a):normalize()
   return m.Plane.new(n, n:dot(a))
 end
 
 
 function m.Plane:clone()
-    return m.Plane.new(self.normal, self.w)
+  return m.Plane.new(self.normal, self.w)
 end
 
 
 function m.Plane:flip()
-    self.normal:mul(-1)
-    self.w = -self.w
+  self.normal = self.normal * -1
+  self.w = -self.w
 end
 
 
@@ -311,67 +320,67 @@ end
 -- respect to self.plane. Polygons in front or in back of self.plane go into
 -- either `front` or `back`.
 function m.Plane:splitPolygon(polygon, coplanarFront, coplanarBack, front, back)
-    local COPLANAR = 0
-    local FRONT = 1
-    local BACK = 2
-    local SPANNING = 3
+  local COPLANAR = 0
+  local FRONT = 1
+  local BACK = 2
+  local SPANNING = 3
 
   -- Classify each point as well as the entire polygon into one of the above
   -- four classes.
-    local polygonType = 0
-    local types = {}
-    for i, v in ipairs(polygon.vertices) do
-      local t = self.normal:dot(v.pos) - self.w
-      local ptype = COPLANAR
-      if (t < -m.Plane.EPSILON) then
-        ptype = BACK
-      elseif (t > m.Plane.EPSILON) then
-        ptype = FRONT
-      end
-      if (ptype ~= 0) then
-        polygonType = bit.bor(polygonType, ptype)
-      end
-      table.insert(types, ptype)
+  local polygonType = 0
+  local types = {}
+  for i, v in ipairs(polygon.vertices) do
+    local t = self.normal:dot(v.pos) - self.w
+    local ptype = COPLANAR
+    if (t < -m.Plane.EPSILON) then
+      ptype = BACK
+    elseif (t > m.Plane.EPSILON) then
+      ptype = FRONT
     end
+    if (ptype ~= 0) then
+      polygonType = bit.bor(polygonType, ptype)
+    end
+    table.insert(types, ptype)
+  end
 
   -- Put the polygon in the correct list, splitting it when necessary.
-    if(polygonType == COPLANAR) then
-      if self.normal:dot(polygon.plane.normal) > 0 then
-        table.insert(coplanarFront, polygon)
-      else 
-        table.insert(coplanarBack, polygon)
-      end
-    elseif(polygonType == FRONT) then
-      table.insert(front, polygon)
-    elseif(polygonType == BACK) then
-      table.insert(back, polygon)
-    elseif(polygonType == SPANNING) then
-      local f = {}
-      local b = {}
-      for i, vi in ipairs(polygon.vertices) do
-        local j = 1 + (i % #polygon.vertices)
-        local ti = types[i]
-        local tj = types[j]
-        local vj = polygon.vertices[j]
-        if (ti ~= BACK) then table.insert(f, vi) end
-        if (ti ~= FRONT) then
-          if (ti ~= BACK) then
-            table.insert(b, vi:clone())
-          else
-            table.insert(b, vi)
-          end
-        end
-        if (bit.bor(ti, tj) == SPANNING) then
-          local t = (self.w - self.normal:dot(vi.pos)) / self.normal:dot(vec3(vj.pos):sub(vi.pos))
-          local v = vi:interpolate(vj, t)
-          table.insert(f, v)
-          table.insert(b, v:clone())
-        end
-      end
-      if (#f >= 3) then table.insert(front, m.Polygon.new(f, polygon.shared)) end
-      if (#b >= 3) then table.insert(back, m.Polygon.new(b, polygon.shared)) end
+  if (polygonType == COPLANAR) then
+    if self.normal:dot(polygon.plane.normal) > 0 then
+      table.insert(coplanarFront, polygon)
+    else
+      table.insert(coplanarBack, polygon)
     end
-    lovr.math.drain()
+  elseif (polygonType == FRONT) then
+    table.insert(front, polygon)
+  elseif (polygonType == BACK) then
+    table.insert(back, polygon)
+  elseif (polygonType == SPANNING) then
+    local f = {}
+    local b = {}
+    for i, vi in ipairs(polygon.vertices) do
+      local j = 1 + (i % #polygon.vertices)
+      local ti = types[i]
+      local tj = types[j]
+      local vj = polygon.vertices[j]
+      if (ti ~= BACK) then table.insert(f, vi) end
+      if (ti ~= FRONT) then
+        if (ti ~= BACK) then
+          table.insert(b, vi:clone())
+        else
+          table.insert(b, vi)
+        end
+      end
+      if (bit.bor(ti, tj) == SPANNING) then
+        local t = (self.w - self.normal:dot(vi.pos)) / self.normal:dot(vj.pos - vi.pos)
+        local v = vi:interpolate(vj, t)
+        table.insert(f, v)
+        table.insert(b, v:clone())
+      end
+    end
+    if (#f >= 3) then table.insert(front, m.Polygon.new(f, polygon.shared)) end
+    if (#b >= 3) then table.insert(back, m.Polygon.new(b, polygon.shared)) end
+  end
+  lovr.math.drain()
 end
 
 
@@ -381,7 +390,7 @@ end
 -- be coplanar and form a convex loop. They do not have to be `CSG.Vertex`
 -- instances but they must behave similarly (duck typing can be used for
 -- customization).
--- 
+--
 -- Each convex polygon has a `shared` property, which is shared between all
 -- polygons that are clones of each other or were split from the same polygon.
 -- self.can be used to define per-polygon properties (such as surface color).
@@ -446,7 +455,7 @@ function m.Node:invert()
   for i, p in ipairs(self.polygons) do
     p:flip()
   end
-  self.plane:flip()
+  if self.plane then self.plane:flip() end
   if (self.front) then self.front:invert() end
   if (self.back) then self.back:invert() end
   local temp = self.front
@@ -458,25 +467,25 @@ end
 -- Recursively remove all polygons in `polygons` that are inside self.BSP
 -- tree.
 function m.Node:clipPolygons(polygons)
-    if (not self.plane) then return lcopy(polygons) end
-    local front = {}
-    local back = {}
-    for i, p in ipairs(polygons) do
-      self.plane:splitPolygon(p, front, back, front, back)
-    end
-    if (self.front) then front = self.front:clipPolygons(front) end
-    if (self.back) then back = self.back:clipPolygons(back)
-    else back = {} end
-    return lappend(front, back)
+  if (not self.plane) then return lcopy(polygons) end
+  local front = {}
+  local back = {}
+  for i, p in ipairs(polygons) do
+    self.plane:splitPolygon(p, front, back, front, back)
+  end
+  if (self.front) then front = self.front:clipPolygons(front) end
+  if (self.back) then back = self.back:clipPolygons(back)
+  else back = {} end
+  return lappend(front, back)
 end
 
 
 -- Remove all polygons in self.BSP tree that are inside the other BSP tree
 -- `bsp`.
 function m.Node:clipTo(bsp)
-    self.polygons = bsp:clipPolygons(self.polygons)
-    if (self.front) then self.front:clipTo(bsp) end
-    if (self.back) then self.back:clipTo(bsp) end
+  self.polygons = bsp:clipPolygons(self.polygons)
+  if (self.front) then self.front:clipTo(bsp) end
+  if (self.back) then self.back:clipTo(bsp) end
 end
 
 
