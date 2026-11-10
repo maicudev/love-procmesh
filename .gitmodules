@@ -1,0 +1,3 @@
+[submodule "menori"]
+	path = menori
+	url = https://github.com/rozenmad/Menori.git

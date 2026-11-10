@@ -4,17 +4,13 @@
 --    vlist = { {0,0,0,_}, {1,2,3,_}, _} -- list of vertices storing data (positions, normals, colors...)
 --    ilist = {1, 2, 3, _},              -- flat list of indices; triplets that from the triangles
 --    sides = {top = {1, 2, 3, _}, _}    -- shape sides mapped to the list of indices
---    vbuffer = Buffer(),                -- vertex buffer object for rendering, regenerated as needed
---    ibuffer = Buffer(),                -- index buffer object for rendering, regenerated as needed
 --  }, with metatable accessors to manipulating functions.
 
 local m = {}
 m.__index = m
 
-m.vbuffer_format = {
-  { 'VertexPosition', 'vec3' },
-  { 'VertexNormal',   'vec3' },
-}
+local vec3 = require 'vector3'
+local menori = require 'menori'
 
 local EPSILON = 1e-6
 
@@ -29,7 +25,7 @@ end
 local function shuffle(list) -- shuffles a copy of a table list
   local shuffled = listappend({}, list)
   for i = 1, #shuffled do
-    local j = lovr.math.random(1, #shuffled)
+    local j = math.random(1, #shuffled)
     shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
   end
   return shuffled
@@ -51,16 +47,10 @@ local function hashToList(s)     -- hashToList('1;2;3') -> 1, 2, 3
 end
 
 
---- Sets future buffer format fields; best called upfront on init
--- existing solids need to be invalidated manually, for example by replacing them with :clone()
-function m.setFormats(vertex_format, index_format)
-  m.vbuffer_format = vertex_format or m.vbuffer_format
-  m.ibuffer_format = index_format or m.ibuffer_format
-end
-
-
 --- Distance of a point vector from a line segment formed from two vectors
 function m.linePointDistance(line, point)
+  line = { vec3(line[1]), vec3(line[2]) }
+  point = vec3(point)
   local segment = (line[2] - line[1]):normalize()
   return segment:mul(segment:dot(point - line[1])):distance(point)
 end
@@ -84,14 +74,11 @@ function m.trianglePointDistance(triangle, point)
   local dy = point[2] - triangle[1][2]
   local dz = point[3] - triangle[1][3]
   return cx * dx + cy * dy + cz * dz
---[[ simple variant with lovr vectors (taxes the vector pool too much):
-  local n = (triangle[2] - triangle[1]):cross(triangle[3] - triangle[1])
-  return (point - triangle[1]):dot(n)
---]]
 end
 
 
 function m.barycentric(triangle, point)
+  point = vec3(point)
   local AB = {triangle[2][1] - triangle[1][1], triangle[2][2] - triangle[1][2], triangle[2][3] - triangle[1][3]}
   local AC = {triangle[3][1] - triangle[1][1], triangle[3][2] - triangle[1][2], triangle[3][3] - triangle[1][3]}
   local AP = {point[1] - triangle[1][1], point[2] - triangle[1][2], point[3] - triangle[1][3]}
@@ -124,6 +111,7 @@ end
 function m:raycast(start, stop, doublesided)
   if self.normals_dirty then self:updateNormals() end
   local intersections = {}
+  start, stop = vec3(start), vec3(stop)
   local dir = stop - start
   for i = 1, #self.ilist, 3 do
     local i1, i2, i3 = self.ilist[i], self.ilist[i+1], self.ilist[i+2]
@@ -167,17 +155,17 @@ end
 
 
 function m:volume()
-    local total_volume = 0
-    local centroid = self:centerOfMass()
-    for i = 1, #self.ilist, 3 do
-        local v1 = vec3(self.vlist[self.ilist[i]][1], self.vlist[self.ilist[i]][2], self.vlist[self.ilist[i]][3]) - centroid
-        local v2 = vec3(self.vlist[self.ilist[i + 1]][1], self.vlist[self.ilist[i + 1]][2], self.vlist[self.ilist[i + 1]][3]) - centroid
-        local v3 = vec3(self.vlist[self.ilist[i + 2]][1], self.vlist[self.ilist[i + 2]][2], self.vlist[self.ilist[i + 2]][3]) - centroid
-        -- Calculate the volume of the tetrahedron formed by the triangle and the reference point
-        local volume = math.abs(v1:dot(v2:cross(v3)) / 6)
-        total_volume = total_volume + volume
-    end
-    return total_volume
+  local total_volume = 0
+  for i = 1, #self.ilist, 3 do
+    local a = self.vlist[self.ilist[i]]
+    local b = self.vlist[self.ilist[i + 1]]
+    local c = self.vlist[self.ilist[i + 2]]
+    total_volume = total_volume
+      + a[1] * (b[2] * c[3] - b[3] * c[2])
+      + a[2] * (b[3] * c[1] - b[1] * c[3])
+      + a[3] * (b[1] * c[2] - b[2] * c[1])
+  end
+  return math.abs(total_volume / 6)
 end
 
 
@@ -230,12 +218,13 @@ end
 
 --- Create a solid by transforming each vertex by mat4.
 -- Example for laying down an upright mesh:
---    solid:transform(mat4():rotate(pi/2, 1,0,0))
+--    solid:transform(menori.ml.mat4():rotate(math.pi / 2, menori.ml.vec3(1, 0, 0)))
 function m:transform(transform, side_filter)
+  assert(transform and transform.multiply_vec3, 'transform must be a Menori mat4')
   local tvec3 = vec3()
   return self:map(function(x, y, z)
-      return transform:mul(tvec3:set(x, y, z)):unpack()
-    end, side_filter)
+    return transform:multiply_vec3(tvec3:set(x, y, z)):unpack()
+  end, side_filter)
 end
 
 
@@ -270,8 +259,7 @@ function m:clone()
       other.sides[side][i] = index
     end
   end
-  other.vbuffer_format = self.vbuffer_format
-  other.ibuffer_format = self.ibuffer_format
+
   other.normals_dirty = self.normals_dirty
   return other
 end
@@ -449,73 +437,34 @@ function m:updateNormals()
 end
 
 
---- Remove the internal buffer representation of solid to force the refresh
-function m:invalidate()
-  self.mesh = nil
-end
-
-
-function m:calculateBoundingBox()
-  local minx = math.huge
-  local maxx = -math.huge
-  local miny = math.huge
-  local maxy = -math.huge
-  local minz = math.huge
-  local maxz = -math.huge
-  for i, v in ipairs(self.vlist) do
-    local x, y, z = unpack(v)
-    minx = math.min(minx, x)
-    maxx = math.max(maxx, x)
-    miny = math.min(miny, y)
-    maxy = math.max(maxy, y)
-    minz = math.min(minz, z)
-    maxz = math.max(maxz, z)
-  end
-  self.mesh:setBoundingBox(minx, maxx, miny, maxy, minz, maxz)
-end
-
-
---- Draw the solid mesh in the supplied pass.
-function m:draw(pass, ...)
-  if #self.ilist < 3 then return end
+--- Convert the solid to a Menori mesh with positions, normals, and default UVs.
+function m:toMenoriMesh(menori_module)
+  menori_module = menori_module or menori
+  assert(menori_module.Mesh, 'Menori.Mesh is required')
   if self.normals_dirty then self:updateNormals() end
-  if not self.mesh then
-    self.mesh = lovr.graphics.newMesh(self.vbuffer_format, self.vlist, 'gpu')
-    self.mesh:setIndices(self.ilist)
-    self:calculateBoundingBox()
+
+  local vertices = {}
+  for i, vertex in ipairs(self.vlist) do
+    vertices[i] = {
+      vertex[1], vertex[2], vertex[3],
+      vertex[4] or 0, vertex[5] or 0, vertex[6] or 0,
+      1, 1, 1, 1, 0, 0
+    }
   end
-  pass:draw(self.mesh, ...)
+
+  return menori_module.Mesh({
+    vertices = vertices,
+    indices = self.ilist,
+    indices_tsize = #vertices > 65535 and 4 or nil
+  })
 end
 
 
---- Draw the wireframe of a solid and each face's normal.
-function m:debugDraw(pass, ...)
-  pass:push('state')
-  pass:setShader()
-  local pose = mat4(...)
-  -- wireframe model
-  pass:setWireframe(true)
-  pass:setColor(0x90d59c)
-  self:draw(pass, pose)
-  -- annotated indices around vertices
-  local randomGenerator = lovr.math.newRandomGenerator(0)
-  pass:setWireframe(false)
-  for i, v in ipairs(self.vlist) do
-    local vc = vec3(pose:mul(unpack(v)))
-    local ne = vec3(v[4], v[5], v[6])
-    quat(pose):mul(ne)
-    ne:mul(0.2)
-    pass:setColor(0xcc7048)
-    pass:line(vc, vc + ne)
-    pass:setColor(0x68a8ab)
-    pass:sphere(vc, 0.02)
-    local ap = vc:add(randomGenerator:randomNormal(0.02, 0),
-                      randomGenerator:randomNormal(0.02, 0),
-                      randomGenerator:randomNormal(0.02, 0))
-    pass:setColor(0xffffb2)
-    pass:text(i, ap, 0.02)
-  end
-  pass:pop('state')
+--- Convert the solid to a Menori model node.
+function m:toMenoriNode(menori_module, material)
+  menori_module = menori_module or menori
+  assert(menori_module.ModelNode, 'Menori.ModelNode is required')
+  return menori_module.ModelNode(self:toMenoriMesh(menori_module), material)
 end
 
 ----- Constructors for solid mesh primitives -----
@@ -579,18 +528,6 @@ function m.fromVertices(vertices, indices)
 end
 
 
---- Construct a solid from LOVR's Model object.
-function m.fromModel(model)
-  assert(type(model) == 'userdata' and model.getTriangles, 'unsupported input')
-  local vlist_flat, ilist = model:getTriangles()
-  local vlist = {}
-  for i = 1, #vlist_flat, 3 do
-    table.insert(vlist, {vlist_flat[i], vlist_flat[i+1], vlist_flat[i+2]})
-  end
-  return m.fromVertices(vlist, ilist)
-end
-
-
 function m.convexHull(point_cloud)
   if #point_cloud < 4 then
     local vertices = {}
@@ -599,7 +536,11 @@ function m.convexHull(point_cloud)
     end
     return m.fromVertices(vertices)
   end
-  local points = shuffle(point_cloud)
+  local points = {}
+  for i, point in ipairs(point_cloud) do
+    points[i] = vec3(point)
+  end
+  points = shuffle(points)
   local tetrahedron
   -- initial tetrahedron; take 4 randomized points (to help avoid coplanars)
   local attempts = 0
@@ -620,7 +561,7 @@ function m.convexHull(point_cloud)
         return m.fromVertices(vertices)
       end
       for i = 1, 4 do -- take different set of 4 points for initial tetrahedron
-        local rnd_index = lovr.math.random(5, #points)
+        local rnd_index = math.random(5, #points)
         points[i], points[rnd_index] = points[rnd_index], points[i]
       end
     end
@@ -704,6 +645,7 @@ end
 
 --- Efficiently add a point to existing convex hull (modifies the solid in place)
 function m:addToConvexHull(point)
+  point = vec3(point)
   table.insert(self.vlist, {point:unpack()})
   if #self.vlist < 4 then
     return self
@@ -801,7 +743,7 @@ function m.superellipsePoints(segments, ax, ay, az, e1, e2)
   end
   for theta = -math.pi / 2, math.pi / 2, math.pi / segments do
     for gamma = -math.pi, math.pi, math.pi / segments do
-      points[#points + 1] = lovr.math.newVec3(
+      points[#points + 1] = vec3(
         ax * math.cos(theta)^e1 * math.abs(math.cos(gamma))^e2 * sgn(math.cos(gamma)),
         ay * math.cos(theta)^e1 * math.abs(math.sin(gamma))^e2 * sgn(math.sin(gamma)),
         az * math.abs(math.sin(theta))^e1 * sgn(math.sin(theta)))
@@ -967,7 +909,9 @@ end
 --- A pyramid with variable number of sides.
 function m.pyramid(segments)
   local self = m.bipyramid(segments)
-  self = self:transform(mat4(0, -0.5, 0), self.sides.ring)
+  self = self:map(function(x, y, z)
+    return x, y - 0.5, z
+  end, self.sides.ring)
   listappend(self.sides.bottom, self.sides.ring)
   return self
 end
@@ -1170,25 +1114,25 @@ end
 
 -- Construct a list of vertices inside a geodesic.
 local function compute_geodesic(point_a, point_b, num_segments)
-  -- add first and last point of geodesic, iterate along arc and compute points
-  local tvec3, tquat = vec3(), quat()
-  local angle_between_endpoints = math.acos( point_a:dot(point_b) )
-  local rotation_axis = vec3(point_a):cross(point_b)
-  local first = tvec3:set(point_a)
-  local point_list = { { first:unpack() } }
+  local angle = math.acos(math.max(-1, math.min(1, point_a:dot(point_b))))
+  local sin_angle = math.sin(angle)
+  local point_list = { { point_a:unpack() } }
   if num_segments == 0 then
     return point_list
   end
-  local dtheta = angle_between_endpoints / num_segments
+
   for point_index = 1, num_segments - 1 do -- iterate horizontally along slice
-    local theta = point_index * dtheta
-    local q = tquat:set(theta, rotation_axis.x, rotation_axis.y, rotation_axis.z)
-    q:mul(tvec3:set(point_a))
-    local point = { tvec3:unpack() }
-    table.insert(point_list, point)
+    local t = point_index / num_segments
+    local point
+    if math.abs(sin_angle) < EPSILON then
+      point = point_a * (1 - t) + point_b * t
+    else
+      point = point_a * (math.sin((1 - t) * angle) / sin_angle)
+        + point_b * (math.sin(t * angle) / sin_angle)
+    end
+    table.insert(point_list, { point:unpack() })
   end
-  local last = tvec3:set(point_b)
-  table.insert(point_list, { last:unpack() })
+  table.insert(point_list, { point_b:unpack() })
   return point_list
 end
 

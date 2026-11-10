@@ -71,6 +71,7 @@ end
 -- Copyright (c) 2011 Evan Wallace (http:--madebyevan.com/), under the MIT license.
 
 local m = {}
+local vec3 = require 'vector3'
 
 m.__index = m
 m.__add = function (lhs, rhs) return lhs:union(rhs) end
@@ -128,16 +129,22 @@ function m:clone()
 end
 
 
-function m:transform(m)
-  local x,y,z
+function m:transform(transform)
   local transformed = {}
-  for i, polygon in ipairs(self.polygons) do
-    for j, v in ipairs(polygon.vertices) do
+  for _, polygon in ipairs(self.polygons) do
+    for _, v in ipairs(polygon.vertices) do
       if not transformed[v] then
-        v.pos.x, v.pos.y, v.pos.z = m:mul(v.pos.x, v.pos.y, v.pos.z)
-        v.normal.x, v.normal.y, v.normal.z = m:mul(v.normal.x, v.normal.y, v.normal.z)
+        v.pos:set(transform:multiply_vec3(v.pos))
         transformed[v] = true
       end
+    end
+    polygon.plane = m.Plane.fromPoints(
+      polygon.vertices[1].pos,
+      polygon.vertices[2].pos,
+      polygon.vertices[3].pos
+    )
+    for _, v in ipairs(polygon.vertices) do
+      v.normal:set(polygon.plane.normal)
     end
   end
   return self
@@ -242,8 +249,8 @@ m.Vertex.__index = m.Vertex
 
 function m.Vertex.new(pos, normal)
   local self = setmetatable({}, m.Vertex)  
-  self.pos = lovr.math.newVec3(pos)
-  self.normal = lovr.math.newVec3(normal)
+  self.pos = vec3(pos)
+  self.normal = vec3(normal)
   return self
 end
 
@@ -282,7 +289,7 @@ m.Plane.__index = m.Plane
 
 function m.Plane.new(normal, w)
   local self = setmetatable({}, m.Plane)
-  self.normal = lovr.math.newVec3(normal)
+  self.normal = vec3(normal)
   self.w = w
   return self
 end
@@ -318,7 +325,7 @@ function m.Plane:splitPolygon(polygon, coplanarFront, coplanarBack, front, back)
 
   -- Classify each point as well as the entire polygon into one of the above
   -- four classes.
-    local polygonType = 0
+    local hasFront, hasBack = false, false
     local types = {}
     for i, v in ipairs(polygon.vertices) do
       local t = self.normal:dot(v.pos) - self.w
@@ -328,11 +335,14 @@ function m.Plane:splitPolygon(polygon, coplanarFront, coplanarBack, front, back)
       elseif (t > m.Plane.EPSILON) then
         ptype = FRONT
       end
-      if (ptype ~= 0) then
-        polygonType = bit.bor(polygonType, ptype)
-      end
+      hasFront = hasFront or ptype == FRONT
+      hasBack = hasBack or ptype == BACK
       table.insert(types, ptype)
     end
+    local polygonType = hasFront and hasBack and SPANNING
+      or hasFront and FRONT
+      or hasBack and BACK
+      or COPLANAR
 
   -- Put the polygon in the correct list, splitting it when necessary.
     if(polygonType == COPLANAR) then
@@ -361,7 +371,7 @@ function m.Plane:splitPolygon(polygon, coplanarFront, coplanarBack, front, back)
             table.insert(b, vi)
           end
         end
-        if (bit.bor(ti, tj) == SPANNING) then
+        if ((ti == FRONT and tj == BACK) or (ti == BACK and tj == FRONT)) then
           local t = (self.w - self.normal:dot(vi.pos)) / self.normal:dot(vec3(vj.pos):sub(vi.pos))
           local v = vi:interpolate(vj, t)
           table.insert(f, v)
@@ -371,7 +381,6 @@ function m.Plane:splitPolygon(polygon, coplanarFront, coplanarBack, front, back)
       if (#f >= 3) then table.insert(front, m.Polygon.new(f, polygon.shared)) end
       if (#b >= 3) then table.insert(back, m.Polygon.new(b, polygon.shared)) end
     end
-    lovr.math.drain()
 end
 
 
