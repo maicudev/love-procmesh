@@ -72,6 +72,8 @@ end
 
 local m = {}
 local vec3 = require 'vector3'
+local normalize_polygons
+local unpack = table.unpack or unpack
 
 m.__index = m
 m.__add = function (lhs, rhs) return lhs:union(rhs) end
@@ -174,7 +176,7 @@ function m:union(csg)
   b:clipTo(a)
   b:invert()
   a:build(b:allPolygons())
-  return m.fromPolygons(a:allPolygons())
+  return m.fromPolygons(normalize_polygons(a:allPolygons()))
 end
 
 
@@ -199,7 +201,7 @@ function m:subtract(csg)
   b:invert()
   a:build(b:allPolygons())
   a:invert()
-  return m.fromPolygons(a:allPolygons())
+  return m.fromPolygons(normalize_polygons(a:allPolygons()))
 end
 
 
@@ -223,7 +225,7 @@ function m:intersect(csg)
   b:clipTo(a)
   a:build(b:allPolygons())
   a:invert()
-  return m.fromPolygons(a:allPolygons())
+  return m.fromPolygons(normalize_polygons(a:allPolygons()))
 end
 
 
@@ -416,7 +418,133 @@ function m.Polygon:flip()
   self.plane:flip()
 end
 
+local POLYGON_EPSILON = 1e-5
 
+local function point_key(position)
+  local function quantize(value)
+    return math.floor(value / POLYGON_EPSILON + 0.5)
+  end
+  return string.format('%d,%d,%d',
+    quantize(position.x), quantize(position.y), quantize(position.z))
+end
+
+local function clean_polygon(polygon)
+  local vertices = {}
+  for _, vertex in ipairs(polygon.vertices) do
+    if #vertices == 0 or vertices[#vertices].pos:distance(vertex.pos) > POLYGON_EPSILON then
+      vertices[#vertices + 1] = vertex:clone()
+    end
+  end
+  if #vertices > 1 and vertices[1].pos:distance(vertices[#vertices].pos) <= POLYGON_EPSILON then
+    table.remove(vertices)
+  end
+
+  local changed = true
+  while changed and #vertices >= 3 do
+    changed = false
+    for i = 1, #vertices do
+      local previous = vertices[(i - 2) % #vertices + 1].pos
+      local current = vertices[i].pos
+      local following = vertices[i % #vertices + 1].pos
+      local first = vec3(current):sub(previous)
+      local second = vec3(following):sub(current)
+      local scale = math.max(first:length() * second:length(), 1)
+      if vec3(first):cross(second):length() <= POLYGON_EPSILON * scale
+          and first:dot(second) >= 0 then
+        table.remove(vertices, i)
+        changed = true
+        break
+      end
+    end
+  end
+
+  if #vertices < 3 then
+    return nil
+  end
+  return m.Polygon.new(vertices, polygon.shared)
+end
+
+local function merge_polygons(a, edge_a, b, edge_b)
+  if a.plane.normal:dot(b.plane.normal) < 1 - POLYGON_EPSILON
+      or math.abs(a.plane.w - b.plane.w) > POLYGON_EPSILON then
+    return nil
+  end
+
+  local vertices = {}
+  local count_a, count_b = #a.vertices, #b.vertices
+  for offset = 1, count_a do
+    vertices[#vertices + 1] = a.vertices[(edge_a + offset - 1) % count_a + 1]:clone()
+  end
+  for offset = 2, count_b - 1 do
+    vertices[#vertices + 1] = b.vertices[(edge_b + offset - 1) % count_b + 1]:clone()
+  end
+
+  local cleaned = clean_polygon(m.Polygon.new(vertices, a.shared))
+  if not cleaned then
+    return nil
+  end
+
+  for i, vertex in ipairs(cleaned.vertices) do
+    local previous = cleaned.vertices[(i - 2) % #cleaned.vertices + 1].pos
+    local current = vertex.pos
+    local following = cleaned.vertices[i % #cleaned.vertices + 1].pos
+    local turn = vec3(current):sub(previous):cross(vec3(following):sub(current))
+    if turn:dot(cleaned.plane.normal) < -POLYGON_EPSILON then
+      return nil
+    end
+  end
+  return cleaned
+end
+
+normalize_polygons = function(source)
+  local polygons = {}
+  for _, polygon in ipairs(source) do
+    local cleaned = clean_polygon(polygon)
+    if cleaned then
+      polygons[#polygons + 1] = cleaned
+    end
+  end
+
+  while true do
+    local directed_edges = {}
+    local merged = false
+    for i, polygon in ipairs(polygons) do
+      for edge = 1, #polygon.vertices do
+        local next_edge = edge % #polygon.vertices + 1
+        local first = point_key(polygon.vertices[edge].pos)
+        local second = point_key(polygon.vertices[next_edge].pos)
+        local forward = first .. '|' .. second
+        local reverse = second .. '|' .. first
+        local candidates = directed_edges[reverse]
+        if candidates then
+          for _, candidate in ipairs(candidates) do
+            if candidate.polygon ~= i then
+              local joined = merge_polygons(
+                polygons[candidate.polygon], candidate.edge,
+                polygon, edge)
+              if joined then
+                local remove_index = math.max(i, candidate.polygon)
+                local keep_index = math.min(i, candidate.polygon)
+                polygons[keep_index] = joined
+                table.remove(polygons, remove_index)
+                merged = true
+                break
+              end
+            end
+          end
+        end
+        if merged then break end
+        local edges = directed_edges[forward] or {}
+        edges[#edges + 1] = {polygon = i, edge = edge}
+        directed_edges[forward] = edges
+      end
+      if merged then break end
+    end
+    if not merged then
+      return polygons
+    end
+  end
+end
 
 --/ class Node --------------------------------------------------------------------------
 -- Holds a node in a BSP tree. A BSP tree is built from a collection of polygons
