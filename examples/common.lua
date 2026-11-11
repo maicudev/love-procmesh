@@ -27,6 +27,7 @@ function common.scene(name, build)
     self.angle = 25
     self.elevation = 18
     self.distance = 4.5
+    self.center = menori.ml.vec3(0, 0, 0)
     self.edge_nodes = {}
     build(self, menori)
     self:update_camera()
@@ -62,7 +63,7 @@ function common.scene(name, build)
 
   function scene:update_camera()
     local ml = menori.ml
-    local center = ml.vec3(0, 0, 0)
+    local center = self.center
     local offset = ml.quat.from_euler_angles(0, math.rad(self.angle), math.rad(self.elevation))
       * ml.vec3.unit_z * self.distance
     self.camera.center = center
@@ -74,6 +75,13 @@ function common.scene(name, build)
     if love.mouse.isDown(1) then
       self.angle = self.angle - dx * 0.35
       self.elevation = math.max(-80, math.min(80, self.elevation - dy * 0.35))
+      self:update_camera()
+    elseif love.mouse.isDown(2) then
+      local direction = self.camera:get_direction()
+      local right = menori.ml.vec3(-direction.z, 0, direction.x):normalize()
+      local up = menori.ml.vec3.cross(right, direction):normalize()
+      local pan_speed = self.distance * 0.001
+      self.center = self.center - right * (dx * pan_speed) + up * (dy * pan_speed)
       self:update_camera()
     end
   end

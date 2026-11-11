@@ -52,7 +52,7 @@ function love.draw()
 
   local width, height = love.graphics.getDimensions()
   love.graphics.print('Example: ' .. examples[current_example].title, 12, 12)
-  love.graphics.print('LMB + drag: orbit    Wheel: zoom    F: edges    Q / E: example    Esc: quit', 12, height - 24)
+  love.graphics.print('LMB + drag: orbit    RMB + drag: pan    Wheel: zoom    F: edges    Q / E: example    Esc: quit', 12, height - 24)
 end
 
 function love.keypressed(key)
