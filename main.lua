@@ -5,7 +5,6 @@ love.filesystem.read = function (path, ...)
   if path:sub(1, 7) == 'menori/' then
     path = 'menori/' .. path
   end
-  print(path,...)
   return lreadfile(path, ...)
 end
 
@@ -13,7 +12,8 @@ local menori = require 'menori'
 
 local examples = {
   { title = 'Subtraction', module = 'examples.subtraction' },
-  { title = 'Union', module = 'examples.union' }
+  { title = 'Union', module = 'examples.union' },
+  { title = 'Intersection', module = 'examples.intersection' }
 }
 local current_example = 1
 local current_scene
@@ -51,12 +51,14 @@ function love.draw()
 
   local width, height = love.graphics.getDimensions()
   love.graphics.print('Example: ' .. examples[current_example].title, 12, 12)
-  love.graphics.print('LMB + drag: orbit    Wheel: zoom    Q / E: example    Esc: quit', 12, height - 24)
+  love.graphics.print('LMB + drag: orbit    Wheel: zoom    F: edges    Q / E: example    Esc: quit', 12, height - 24)
 end
 
 function love.keypressed(key)
   if key == 'escape' then
     love.event.quit()
+  elseif key == 'f' then
+    current_scene:set_edges_enabled(not current_scene.edges_enabled)
   elseif key == 'q' or key == 'e' then
     local direction = key == 'e' and 1 or -1
     load_example((current_example - 1 + direction) % #examples + 1)
