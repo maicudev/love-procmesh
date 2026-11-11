@@ -38,7 +38,7 @@ function common.scene(name, build)
     surface_material:set_shader_code(nil, lighting_frag)
 
     local edge_material = menori.Material()
-    edge_material:set('baseColor', {0.035, 0.045, 0.06, 1})
+    edge_material:set('baseColor', {1, 1, 1, 1})
     edge_material.wireframe = true
     edge_material.mesh_cull_mode = 'none'
     edge_material.depth_func = 'lequal'
