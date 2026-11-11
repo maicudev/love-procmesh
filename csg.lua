@@ -71,7 +71,8 @@ end
 -- Copyright (c) 2011 Evan Wallace (http:--madebyevan.com/), under the MIT license.
 
 local m = {}
-local vec3 = require 'vector3'
+local menori = require 'menori'
+local vec3 = menori.ml.vec3
 local normalize_polygons
 local unpack = table.unpack or unpack
 
@@ -265,7 +266,7 @@ end
 -- Invert all orientation-specific data (e.g. vertex normal). Called when the
 -- orientation of a polygon is flipped.
 function m.Vertex:flip()
-  self.normal:mul(-1)
+  self.normal = -self.normal
 end
 
 
@@ -274,8 +275,8 @@ end
 -- override self.to interpolate additional properties.
 function m.Vertex:interpolate(other, t)
   return m.Vertex.new(
-    vec3(self.pos):lerp(other.pos, t),
-    vec3(self.normal):lerp(other.normal, t)
+    vec3.lerp(self.pos, other.pos, t),
+    vec3.lerp(self.normal, other.normal, t)
   )
 end
 
@@ -298,8 +299,8 @@ end
 
 
 function m.Plane.fromPoints(a, b, c)
-  local n = vec3(b):sub(a):cross(vec3(c):sub(a)):normalize()
-  return m.Plane.new(n, n:dot(a))
+  local n = vec3.cross(b - a, c - a):normalize()
+  return m.Plane.new(n, vec3.dot(n, a))
 end
 
 
@@ -309,7 +310,7 @@ end
 
 
 function m.Plane:flip()
-    self.normal:mul(-1)
+    self.normal = -self.normal
     self.w = -self.w
 end
 
@@ -330,7 +331,7 @@ function m.Plane:splitPolygon(polygon, coplanarFront, coplanarBack, front, back)
     local hasFront, hasBack = false, false
     local types = {}
     for i, v in ipairs(polygon.vertices) do
-      local t = self.normal:dot(v.pos) - self.w
+      local t = vec3.dot(self.normal, v.pos) - self.w
       local ptype = COPLANAR
       if (t < -m.Plane.EPSILON) then
         ptype = BACK
@@ -348,7 +349,7 @@ function m.Plane:splitPolygon(polygon, coplanarFront, coplanarBack, front, back)
 
   -- Put the polygon in the correct list, splitting it when necessary.
     if(polygonType == COPLANAR) then
-      if self.normal:dot(polygon.plane.normal) > 0 then
+      if vec3.dot(self.normal, polygon.plane.normal) > 0 then
         table.insert(coplanarFront, polygon)
       else 
         table.insert(coplanarBack, polygon)
@@ -374,7 +375,8 @@ function m.Plane:splitPolygon(polygon, coplanarFront, coplanarBack, front, back)
           end
         end
         if ((ti == FRONT and tj == BACK) or (ti == BACK and tj == FRONT)) then
-          local t = (self.w - self.normal:dot(vi.pos)) / self.normal:dot(vec3(vj.pos):sub(vi.pos))
+          local t = (self.w - vec3.dot(self.normal, vi.pos))
+            / vec3.dot(self.normal, vj.pos - vi.pos)
           local v = vi:interpolate(vj, t)
           table.insert(f, v)
           table.insert(b, v:clone())
@@ -431,11 +433,11 @@ end
 local function clean_polygon(polygon)
   local vertices = {}
   for _, vertex in ipairs(polygon.vertices) do
-    if #vertices == 0 or vertices[#vertices].pos:distance(vertex.pos) > POLYGON_EPSILON then
+    if #vertices == 0 or vec3.distance(vertices[#vertices].pos, vertex.pos) > POLYGON_EPSILON then
       vertices[#vertices + 1] = vertex:clone()
     end
   end
-  if #vertices > 1 and vertices[1].pos:distance(vertices[#vertices].pos) <= POLYGON_EPSILON then
+  if #vertices > 1 and vec3.distance(vertices[1].pos, vertices[#vertices].pos) <= POLYGON_EPSILON then
     table.remove(vertices)
   end
 
@@ -446,11 +448,11 @@ local function clean_polygon(polygon)
       local previous = vertices[(i - 2) % #vertices + 1].pos
       local current = vertices[i].pos
       local following = vertices[i % #vertices + 1].pos
-      local first = vec3(current):sub(previous)
-      local second = vec3(following):sub(current)
+      local first = current - previous
+      local second = following - current
       local scale = math.max(first:length() * second:length(), 1)
-      if vec3(first):cross(second):length() <= POLYGON_EPSILON * scale
-          and first:dot(second) >= 0 then
+      if vec3.cross(first, second):length() <= POLYGON_EPSILON * scale
+          and vec3.dot(first, second) >= 0 then
         table.remove(vertices, i)
         changed = true
         break
@@ -465,7 +467,7 @@ local function clean_polygon(polygon)
 end
 
 local function merge_polygons(a, edge_a, b, edge_b)
-  if a.plane.normal:dot(b.plane.normal) < 1 - POLYGON_EPSILON
+  if vec3.dot(a.plane.normal, b.plane.normal) < 1 - POLYGON_EPSILON
       or math.abs(a.plane.w - b.plane.w) > POLYGON_EPSILON then
     return nil
   end
@@ -488,8 +490,8 @@ local function merge_polygons(a, edge_a, b, edge_b)
     local previous = cleaned.vertices[(i - 2) % #cleaned.vertices + 1].pos
     local current = vertex.pos
     local following = cleaned.vertices[i % #cleaned.vertices + 1].pos
-    local turn = vec3(current):sub(previous):cross(vec3(following):sub(current))
-    if turn:dot(cleaned.plane.normal) < -POLYGON_EPSILON then
+    local turn = vec3.cross(current - previous, following - current)
+    if vec3.dot(turn, cleaned.plane.normal) < -POLYGON_EPSILON then
       return nil
     end
   end

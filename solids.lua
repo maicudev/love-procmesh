@@ -9,8 +9,8 @@
 local m = {}
 m.__index = m
 
-local vec3 = require 'vector3'
 local menori = require 'menori'
+local vec3 = menori.ml.vec3
 local unpack = table.unpack or unpack
 
 local EPSILON = 1e-6
@@ -52,8 +52,14 @@ end
 function m.linePointDistance(line, point)
   line = { vec3(line[1]), vec3(line[2]) }
   point = vec3(point)
-  local segment = (line[2] - line[1]):normalize()
-  return segment:mul(segment:dot(point - line[1])):distance(point)
+  local direction = line[2] - line[1]
+  local length = direction:length()
+  if length <= EPSILON then
+    return vec3.distance(point, line[1])
+  end
+  local segment = direction / length
+  local distance = math.max(0, math.min(length, vec3.dot(point - line[1], segment)))
+  return vec3.distance(line[1] + segment * distance, point)
 end
 
 
@@ -62,32 +68,20 @@ end
 -- if zero, point and triangle are coplanar
 -- if negative, the point is behind the triangle
 function m.trianglePointDistance(triangle, point)
-  local ux = triangle[2][1] - triangle[1][1]
-  local uy = triangle[2][2] - triangle[1][2]
-  local uz = triangle[2][3] - triangle[1][3]
-  local vx = triangle[3][1] - triangle[1][1]
-  local vy = triangle[3][2] - triangle[1][2]
-  local vz = triangle[3][3] - triangle[1][3]
-  local cx = uy * vz - uz * vy
-  local cy = uz * vx - ux * vz
-  local cz = ux * vy - uy * vx
-  local dx = point[1] - triangle[1][1]
-  local dy = point[2] - triangle[1][2]
-  local dz = point[3] - triangle[1][3]
-  return cx * dx + cy * dy + cz * dz
+  local a, b, c = vec3(triangle[1]), vec3(triangle[2]), vec3(triangle[3])
+  return vec3.dot(vec3.cross(b - a, c - a), vec3(point) - a)
 end
 
 
 function m.barycentric(triangle, point)
+  local a, b, c = vec3(triangle[1]), vec3(triangle[2]), vec3(triangle[3])
   point = vec3(point)
-  local AB = {triangle[2][1] - triangle[1][1], triangle[2][2] - triangle[1][2], triangle[2][3] - triangle[1][3]}
-  local AC = {triangle[3][1] - triangle[1][1], triangle[3][2] - triangle[1][2], triangle[3][3] - triangle[1][3]}
-  local AP = {point[1] - triangle[1][1], point[2] - triangle[1][2], point[3] - triangle[1][3]}
-  local dotABAB = AB[1]*AB[1] + AB[2]*AB[2] + AB[3]*AB[3]
-  local dotACAC = AC[1]*AC[1] + AC[2]*AC[2] + AC[3]*AC[3]
-  local dotABAC = AB[1]*AC[1] + AB[2]*AC[2] + AB[3]*AC[3]
-  local dotABAP = AB[1]*AP[1] + AB[2]*AP[2] + AB[3]*AP[3]
-  local dotACAP = AC[1]*AP[1] + AC[2]*AP[2] + AC[3]*AP[3]
+  local AB, AC, AP = b - a, c - a, point - a
+  local dotABAB = vec3.dot(AB, AB)
+  local dotACAC = vec3.dot(AC, AC)
+  local dotABAC = vec3.dot(AB, AC)
+  local dotABAP = vec3.dot(AB, AP)
+  local dotACAP = vec3.dot(AC, AP)
   local denom = dotABAB * dotACAC - dotABAC * dotABAC
   if (denom == 0) then
       return nil -- degenerate triangle
@@ -95,11 +89,8 @@ function m.barycentric(triangle, point)
   local u = (dotACAC * dotABAP - dotABAC * dotACAP) / denom
   local v = (dotABAB * dotACAP - dotABAC * dotABAP) / denom
   local coords = {1 - u - v, u, v}
-  local reconstructed = vec3(
-    coords[1] * triangle[1][1] + coords[2] * triangle[2][1] + coords[3] * triangle[3][1],
-    coords[1] * triangle[1][2] + coords[2] * triangle[2][2] + coords[3] * triangle[3][2],
-    coords[1] * triangle[1][3] + coords[2] * triangle[2][3] + coords[3] * triangle[3][3])
-  if reconstructed:distance(point) < EPSILON then
+  local reconstructed = a * coords[1] + b * coords[2] + c * coords[3]
+  if vec3.distance(reconstructed, point) < EPSILON then
     return coords
   else
     return nil -- point is not on triangle plane
@@ -117,20 +108,20 @@ function m:raycast(start, stop, doublesided)
   for i = 1, #self.ilist, 3 do
     local i1, i2, i3 = self.ilist[i], self.ilist[i+1], self.ilist[i+2]
     local a, b, c = vec3(unpack(self.vlist[i1])), vec3(unpack(self.vlist[i2])), vec3(unpack(self.vlist[i3]))
-    if doublesided or dir:dot(self.vlist[i1][4], self.vlist[i1][5], self.vlist[i1][6]) <= 0 then
+    if doublesided or vec3.dot(dir, vec3(self.vlist[i1][4], self.vlist[i1][5], self.vlist[i1][6])) <= 0 then
       local edge1 = b - a
       local edge2 = c - a
-      local h = vec3(dir):cross(edge2)
-      local par = edge1:dot(h)
+      local h = vec3.cross(dir, edge2)
+      local par = vec3.dot(edge1, h)
       if par <= -EPSILON or par >= EPSILON then -- check if the ray and triangle are parallel
         local f = 1 / par
         local s = start - a
-        local u = f * s:dot(h)
+        local u = f * vec3.dot(s, h)
         if u >= 0 and u <= 1 then -- else intersection falls outside the triangle
-          local q = s:cross(edge1)
-          local v = f * dir:dot(q)
+          local q = vec3.cross(s, edge1)
+          local v = f * vec3.dot(dir, q)
           if v >= 0 and u + v <= 1 then -- else intersection falls outside the triangle
-            local t = f * edge2:dot(q)
+            local t = f * vec3.dot(edge2, q)
             if t > EPSILON and t < 1 then -- chech is intersection behind the start point
               -- intersection is inside triangle
               local point = start + dir * t
@@ -148,7 +139,7 @@ end
 function m:centerOfMass()
     local center = vec3(0, 0, 0)
     for i = 1, #self.vlist do
-        center:add(self.vlist[i][1], self.vlist[i][2], self.vlist[i][3])
+        center = center + vec3(self.vlist[i][1], self.vlist[i][2], self.vlist[i][3])
     end
     center = center / #self.vlist
     return center
@@ -410,7 +401,7 @@ function m:updateNormals()
     v1:set(unpack(self.vlist[vi1]))
     v2:set(unpack(self.vlist[vi2]))
     v3:set(unpack(self.vlist[vi3]))
-    local fnormal = {v2:sub(v1):cross(v3:sub(v1)):normalize():unpack()}
+    local fnormal = {vec3.cross(v2 - v1, v3 - v1):normalize():unpack()}
     normals[vi1] = normals[vi1] or {}
     normals[vi2] = normals[vi2] or {}
     normals[vi3] = normals[vi3] or {}
@@ -418,17 +409,17 @@ function m:updateNormals()
     table.insert(normals[vi2], fnormal)
     table.insert(normals[vi3], fnormal)
   end
-  local vnormal, tvec3 = vec3(), vec3()
+  local vnormal = vec3()
   for i = 1, #self.vlist do
     assert(normals[i], 'no triangle in index list contains vertex ' .. i)
     if normals[i] then
       vnormal:set(0,0,0)
       local c = 0
       for _, fnormal in ipairs(normals[i]) do
-        vnormal:add(tvec3:set(unpack(fnormal)))
+        vnormal = vnormal + vec3(unpack(fnormal))
         c = c + 1
       end
-      vnormal:mul(1 / c)
+      vnormal = vnormal * (1 / c)
       local v = self.vlist[i]
       v[4], v[5], v[6] = vnormal:normalize():unpack()
     end
@@ -570,7 +561,7 @@ function m.convexHull(point_cloud)
 
   -- construct faces of intial convex hull with correct triangle windings
   local faces = {} -- list of triangles {{i1,i2,i3},} where i indexes input list of points
-  local center = (tetrahedron[1] + tetrahedron[2] + tetrahedron[3] + tetrahedron[4]):mul(1 / 4)
+  local center = (tetrahedron[1] + tetrahedron[2] + tetrahedron[3] + tetrahedron[4]) / 4
   for i = 1, 4 do
     local face = { i,
                    1 + (i + 1) % 4,
@@ -654,7 +645,7 @@ function m:addToConvexHull(point)
   local center = (vec3(unpack(self.vlist[1])) +
                   vec3(unpack(self.vlist[2])) +
                   vec3(unpack(self.vlist[3])) +
-                  vec3(unpack(self.vlist[4]))):mul(1 / 4)
+                  vec3(unpack(self.vlist[4]))) / 4
   if #self.vlist == 4 then
     -- construct faces of intial convex hull with correct triangle windings
     for i = 1, 4 do
@@ -1115,7 +1106,7 @@ end
 
 -- Construct a list of vertices inside a geodesic.
 local function compute_geodesic(point_a, point_b, num_segments)
-  local angle = math.acos(math.max(-1, math.min(1, point_a:dot(point_b))))
+  local angle = math.acos(math.max(-1, math.min(1, vec3.dot(point_a, point_b))))
   local sin_angle = math.sin(angle)
   local point_list = { { point_a:unpack() } }
   if num_segments == 0 then
@@ -1247,12 +1238,9 @@ function m.octasphere(subdivisions)
     reflect:set(unpack(refl))
     -- reflect/mirror the original patch, insert vertices into final shape
     for _,v in ipairs(patchvertices) do
-      local rv = tvec3:set( unpack(v) )
-      rv:add(1,1,1) -- spread apart 8 domes, so that no two points are on same coordinates
-      rv:mul(reflect)
+      local rv = (tvec3:set(unpack(v)) + 1) * reflect
       local x, y, z = rv:unpack()
-      local nv = tvec3:set( unpack(v) )
-      nv:mul(reflect)
+      local nv = tvec3:set(unpack(v)) * reflect
       local nx, ny, nz = nv:unpack()
       table.insert(mergedvertices, { x, y, z, nx, ny, nz })
     end
