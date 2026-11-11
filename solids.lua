@@ -493,6 +493,30 @@ function m.fromCSG(csg)
 end
 
 
+--- Create a solid from a Menori mesh shape.
+-- Recalculates flat face normals. The source must provide indexed triangles.
+function m.fromMenoriShape(shape)
+  assert(shape and type(shape.get_triangles) == 'function',
+    'shape must be a Menori mesh')
+
+  local triangles = shape:get_triangles()
+  assert(#triangles > 0, 'Menori shape must contain indexed triangles')
+
+  local solid = m.new()
+  for _, triangle in ipairs(triangles) do
+    assert(#triangle == 3, 'Menori mesh must contain triangles')
+    for _, position in ipairs(triangle) do
+      local vertex = vec3(position)
+      solid.vlist[#solid.vlist + 1] = {vertex.x, vertex.y, vertex.z, 0, 0, 0}
+      solid.ilist[#solid.ilist + 1] = #solid.vlist
+    end
+  end
+
+  solid:updateNormals()
+  return solid
+end
+
+
 --- Construct a solid from list of vertices and optional indices.
 function m.fromVertices(vertices, indices)
   local self = m.new()
