@@ -13,5 +13,5 @@ return common.scene('procmesh_union', function(self, menori)
   assert(#result.ilist > 0 and result:volume() > cube:volume(),
     'CSG union did not add volume')
   self:add_solid(result, {0.95, 0.56, 0.2, 1})
-  self:set_edges_enabled(true)
+  self:set_edges_enabled(false)
 end)

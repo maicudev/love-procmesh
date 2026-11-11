@@ -11,5 +11,5 @@ return common.scene('procmesh_subtraction_menori_shapes', function(self, menori)
   assert(#result.ilist > 0 and result:volume() < box:volume(),
     'CSG subtraction did not remove volume')
   self:add_solid(result, {0.25, 0.72, 0.92, 1})
-  self:set_edges_enabled(true)
+  self:set_edges_enabled(false)
 end)

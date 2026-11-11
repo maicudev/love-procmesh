@@ -14,5 +14,5 @@ return common.scene('procmesh_intersection', function(self, menori)
       and result:volume() < math.min(cube:volume(), sphere:volume()),
     'CSG intersection did not produce the overlapping volume')
   self:add_solid(result, {0.48, 0.82, 0.42, 1})
-  self:set_edges_enabled(true)
+  self:set_edges_enabled(false)
 end)
