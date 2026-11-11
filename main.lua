@@ -15,6 +15,7 @@ local examples = {
   { title = 'Union', module = 'examples.union' },
   { title = 'Intersection', module = 'examples.intersection' },
   { title = 'Subtraction with Menori shapes', module = 'examples.subtraction_menori_shapes' },
+  { title = 'Live subtraction', module = 'examples.subtraction_live' },
 }
 local current_example = 1
 local current_scene
@@ -52,6 +53,9 @@ function love.draw()
 
   local width, height = love.graphics.getDimensions()
   love.graphics.print('Example: ' .. examples[current_example].title, 12, 12)
+  if current_scene.hint then
+    love.graphics.print(current_scene.hint, 12, 32)
+  end
   love.graphics.print('LMB + drag: orbit    RMB + drag: pan    Wheel: zoom    F: edges    Q / E: example    Esc: quit', 12, height - 24)
 end
 
@@ -68,6 +72,18 @@ end
 
 function love.mousemoved(...)
   current_scene:mousemoved(...)
+end
+
+function love.mousepressed(...)
+  if current_scene.mousepressed then
+    current_scene:mousepressed(...)
+  end
+end
+
+function love.mousereleased(...)
+  if current_scene.mousereleased then
+    current_scene:mousereleased(...)
+  end
 end
 
 function love.wheelmoved(...)
