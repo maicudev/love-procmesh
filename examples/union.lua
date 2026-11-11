@@ -6,7 +6,7 @@ return common.scene('procmesh_union', function(self, menori)
   local mat4 = menori.ml.mat4
   local cube = solids.cube():transform(
     mat4():scale(1.65, 1.65, 1.65))
-  local sphere = solids.sphere(2):transform(
+  local sphere = solids.sphere(1):transform(
     mat4():translate(0.85, 0.0, 0):scale(0.9, 0.9, 0.9))
 
   local result = solids.fromCSG(csg.fromSolid(cube):union(csg.fromSolid(sphere)))

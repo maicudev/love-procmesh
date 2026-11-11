@@ -8,7 +8,7 @@ return common.scene('procmesh_subtraction', function(self, menori)
     mat4():scale(1.65, 1.65, 1.65))
   local cube2 = solids.cube():transform(
     mat4():translate(0.5, 0.0, 0.0):scale(1.0, 1.0, 1.0))
-  local sphere = solids.sphere(2):transform(
+  local sphere = solids.sphere(1):transform(
     mat4():translate(-0.85, 0, 0):scale(0.9, 0.9, 0.9))
 
   local csgCube = csg.fromSolid(cube)
