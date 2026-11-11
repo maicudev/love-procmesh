@@ -13,7 +13,8 @@ local menori = require 'menori'
 local examples = {
   { title = 'Subtraction', module = 'examples.subtraction' },
   { title = 'Union', module = 'examples.union' },
-  { title = 'Intersection', module = 'examples.intersection' }
+  { title = 'Intersection', module = 'examples.intersection' },
+  { title = 'Subtraction with Menori shapes', module = 'examples.subtraction_menori_shapes' },
 }
 local current_example = 1
 local current_scene
