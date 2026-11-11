@@ -15,12 +15,13 @@ return common.scene('procmesh_subtraction', function(self, menori)
   local csgCube2 = csg.fromSolid(cube2)
   local csgSphere = csg.fromSolid(sphere)
 
-  local csgRes = csgCube:subtract(csgCube2)
+  local csgRes = csgCube2
+  csgRes = csgCube:subtract(csgCube2)
   csgRes = csgRes:subtract(csgSphere)
 
   local result = solids.fromCSG(csgRes)
-  -- assert(#result.ilist > 0 and result:volume() < cube:volume(),
-  --   'CSG subtraction did not remove volume')
+  assert(#result.ilist > 0 and result:volume() < cube:volume(),
+    'CSG subtraction did not remove volume')
   self:add_solid(result, {0.25, 0.72, 0.92, 1})
   self:set_edges_enabled(true)
 end)
