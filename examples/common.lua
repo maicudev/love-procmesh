@@ -54,6 +54,7 @@ function common.scene(name, build)
     self.root_node:attach(edges)
     table.insert(self.edge_nodes, edges)
     table.insert(self.surface_nodes, surface)
+    return surface, edges
   end
 
   function scene:set_edges_enabled(enabled)
