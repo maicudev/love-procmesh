@@ -11,6 +11,7 @@ m.__index = m
 
 local vec3 = require 'vector3'
 local menori = require 'menori'
+local unpack = table.unpack or unpack
 
 local EPSILON = 1e-6
 
