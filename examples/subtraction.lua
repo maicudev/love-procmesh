@@ -16,7 +16,7 @@ return common.scene('procmesh_subtraction', function(self, menori)
   local csgSphere = csg.fromSolid(sphere)
 
   local csgRes = csgCube2
-  csgRes = csgCube:subtract(csgCube2)
+  csgRes = csgCube:subtract(csgRes)
   csgRes = csgRes:subtract(csgSphere)
 
   local result = solids.fromCSG(csgRes)
