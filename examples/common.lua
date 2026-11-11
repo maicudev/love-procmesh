@@ -29,6 +29,7 @@ function common.scene(name, build)
     self.distance = 4.5
     self.center = menori.ml.vec3(0, 0, 0)
     self.edge_nodes = {}
+    self.surface_nodes = {}
     build(self, menori)
     self:update_camera()
   end
@@ -52,12 +53,16 @@ function common.scene(name, build)
     self.root_node:attach(surface)
     self.root_node:attach(edges)
     table.insert(self.edge_nodes, edges)
+    table.insert(self.surface_nodes, surface)
   end
 
   function scene:set_edges_enabled(enabled)
     self.edges_enabled = enabled
     for _, node in ipairs(self.edge_nodes) do
       node.render_flag = enabled
+    end
+    for _, node in ipairs(self.surface_nodes) do
+      node.render_flag = not enabled
     end
   end
 
